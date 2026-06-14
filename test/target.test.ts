@@ -55,11 +55,20 @@ eq(
   'empty scene → no-op',
 );
 
-// All matching slots FILLED → still no-op (never clobber an existing fill).
+// All matching slots FILLED → RE-SERVE into one (replace), consistent with a poll
+// re-serving into its occupied overlay slot. Only the ABSENCE of any matching slot
+// type no-ops (see above) — a filled-but-present slot is a valid (re)serve target.
 eq(
   resolveOverlayTarget([docSlot('d1', 0, true)], 'doc', undefined),
-  { targetId: null, reason: 'no-matching-slot' },
-  'only matching slot is filled → no-op',
+  { targetId: 'd1' },
+  'sole doc slot already filled → re-serve into it (matches poll re-serve)',
+);
+// A poll re-serving into its single FILLED overlay slot resolves the same way (the
+// behaviour docs now mirror).
+eq(
+  resolveOverlayTarget([ovSlot('o1', 0, true)], 'poll', undefined),
+  { targetId: 'o1' },
+  'sole overlay slot already filled → re-serve into it',
 );
 
 // ── Rule 3: exactly one empty matching slot → use it ──────────────────────────
@@ -133,11 +142,13 @@ eq(
 let a2: SceneAssignments = {};
 a2 = assignToSlot(a2, 'sceneA', 'a-doc', { kind: 'doc', ref: 'mat1' });
 eq(slotAssignment(a2, 'sceneA', 'a-doc')?.ref, 'mat1', 'assignToSlot then read back ref');
-// Now a-doc is filled → a doc click resolves to NO-OP (the only doc slot is full).
+// Now a-doc is filled → a doc click RE-SERVES into it (replace), so a streamer can
+// swap the shown doc with a click exactly like re-pushing a poll. (This is the P0.1
+// fix: a filled sole doc slot must not silently no-op.)
 eq(
   resolveOverlayTarget(sceneSlots('sceneA', sceneAItems, a2), 'doc', undefined),
-  { targetId: null, reason: 'no-matching-slot' },
-  'after assigning a-doc, a doc click no-ops (sole slot filled)',
+  { targetId: 'a-doc' },
+  'after assigning a-doc, a doc click re-serves into a-doc (replace)',
 );
 // Switching scenes must not lose the assignment: re-reading sceneA still has it.
 eq(slotAssignment(a2, 'sceneA', 'a-doc')?.ref, 'mat1', 'assignment persists across scene reads');

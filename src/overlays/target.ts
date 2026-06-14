@@ -64,14 +64,21 @@ export interface ResolveResult {
 /** Resolve which slot in the CURRENT scene a clicked material populates.
  *
  *  RULES (see file header):
- *   • Considers only EMPTY slots of the matching type in `slots` — the caller
- *     passes ONLY the current scene's slots, so the result is scene-scoped (6).
- *   • 0 empty matching slots → { targetId: null } — NO-OP (2). Note: if every
- *     matching slot is FILLED we still no-op rather than overwrite, so a click
- *     never silently clobbers a slot the streamer set up (manual drag overrides).
- *   • 1 → that slot (3).
- *   • >1 → the per-type last-interacted slot if it's still an empty candidate,
- *     else the lowest-z (first in draw order) candidate — deterministic (4).
+ *   • Considers slots of the matching type in `slots` — the caller passes ONLY the
+ *     current scene's slots, so the result is scene-scoped (6).
+ *   • 0 matching slots of the type at all → { targetId: null } — NO-OP (2): the
+ *     scene has nowhere of this type to put it (never create one, never spill to
+ *     another scene).
+ *   • Otherwise PREFER an EMPTY matching slot; if every matching slot is already
+ *     FILLED, RE-SERVE into one (replace) — so a doc click lands consistently with
+ *     a poll click (a poll always re-serves into its one overlay slot). A click
+ *     replacing an occupied slot is the streamer's intent, exactly like re-pushing
+ *     a poll; manual drag still overrides the target explicitly.
+ *   • 1 candidate → that slot (3).
+ *   • >1 → the per-type last-interacted slot if it's still a candidate, else the
+ *     lowest-z (first in draw order) candidate — deterministic (4). Empty
+ *     candidates win over filled ones so a click fills a free slot before
+ *     replacing an occupied one.
  *
  *  Pure — no mutation, no side effects. */
 export function resolveOverlayTarget(
@@ -80,12 +87,17 @@ export function resolveOverlayTarget(
   lastInteracted: LastInteracted | undefined,
 ): ResolveResult {
   const wantType = itemTypeForKind(kind);
-  const candidates = slots.filter((s) => s.type === wantType && !s.filled);
-  if (candidates.length === 0) return { targetId: null, reason: 'no-matching-slot' };
+  const ofType = slots.filter((s) => s.type === wantType);
+  if (ofType.length === 0) return { targetId: null, reason: 'no-matching-slot' };
+  // Prefer EMPTY slots; fall back to ALL matching slots (re-serve/replace) when none
+  // is empty — so a doc click never silently no-ops just because its one doc slot is
+  // already filled (mirrors poll re-serve into its occupied overlay slot).
+  const empties = ofType.filter((s) => !s.filled);
+  const candidates = empties.length > 0 ? empties : ofType;
   if (candidates.length === 1) return { targetId: candidates[0].id };
 
-  // Multiple empty matching slots → prefer the most-recently-interacted one if it
-  // is STILL an empty candidate; otherwise the deterministic draw-order first.
+  // Multiple candidates → prefer the most-recently-interacted one if it's still a
+  // candidate; otherwise the deterministic draw-order first.
   const lastId = lastInteracted?.[wantType];
   if (lastId && candidates.some((c) => c.id === lastId)) return { targetId: lastId };
   const byZ = [...candidates].sort((a, b) => a.z - b.z);
