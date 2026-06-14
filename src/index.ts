@@ -17,6 +17,33 @@ export type {
   Box,
 } from './streaming/types';
 export { defaultComposition, aspectRatio, composeTvLayout } from './streaming/types';
+// Two-slot live model + live-sync wire + scene-assignment model (no name clash
+// with layout's Scene). Re-exported at the top level so web/mobile import from
+// `@paxpia/core` directly.
+export type {
+  LiveSlot,
+  LiveSlots,
+  LiveSyncMsg,
+  LiveSyncWireMsg,
+  LiveScene,
+  LiveSceneItem,
+  SceneAssignment,
+} from './streaming/live';
+export {
+  LIVESYNC_WIRE_VERSION,
+  slotForKind,
+  emptySlots,
+  setSlot,
+  clearSlot,
+  clearAllSlots,
+  slotInstance,
+  isLiveSyncMsg,
+  encodeLiveSyncMsg,
+  decodeLiveSyncMsg,
+  assignScene,
+  unassignScene,
+  initialSceneId,
+} from './streaming/live';
 export * from './overlays';
 // Layout: the canonical resizable/reorderable scene model (LayoutItem, Scene,
 // clampRect/moveItem/resizeItem/reorderZ/fitToBox). RN-portable; web + mobile share it.
