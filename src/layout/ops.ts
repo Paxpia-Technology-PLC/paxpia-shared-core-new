@@ -103,6 +103,26 @@ export function bumpZ(items: LayoutItem[], id: string, dir: 'up' | 'down'): Layo
   return ordered.map((it, idx) => (it.z === idx ? it : { ...it, z: idx }));
 }
 
+/** Move the item with `id` to `toIndex` in the TOP-OF-STACK-FIRST ordering (z
+ *  descending), then re-stamp z so the new order sticks. This backs the drag-to-
+ *  reorder Sources list, whose rows are shown highest-z first: toIndex 0 = bring
+ *  fully to the front. We work in the descending array the UI shows, splice the
+ *  item to its new slot, then re-stamp z so index 0 gets the HIGHEST z. Returns
+ *  items in draw order (z ascending) with contiguous z. Pure — same contract as
+ *  bumpZ, so web (dnd-kit) and RN (draggable list) drive it identically. */
+export function moveItemZ(items: LayoutItem[], id: string, toIndex: number): LayoutItem[] {
+  const desc = [...items].sort((a, b) => b.z - a.z); // top of stack first (UI order)
+  const from = desc.findIndex((it) => it.id === id);
+  if (from === -1) return items;
+  const clamped = toIndex < 0 ? 0 : toIndex > desc.length - 1 ? desc.length - 1 : toIndex;
+  if (clamped === from) return items;
+  const [moved] = desc.splice(from, 1);
+  desc.splice(clamped, 0, moved);
+  // desc[0] is front-most → highest z. Re-stamp z = (n-1-index) and return ascending.
+  const n = desc.length;
+  return desc.map((it, idx) => ({ ...it, z: n - 1 - idx })).sort((a, b) => a.z - b.z);
+}
+
 /** Items in draw order (z ascending) — the order a canvas paints / a View tree
  *  stacks. A small convenience so every renderer agrees on order. */
 export function itemsInDrawOrder(scene: Scene): LayoutItem[] {
