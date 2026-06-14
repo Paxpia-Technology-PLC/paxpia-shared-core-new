@@ -78,6 +78,14 @@ export function setItemFit(item: LayoutItem, fit: FitMode): LayoutItem {
   return { ...item, fit };
 }
 
+/** The ONE human label for a fit mode, shared by every fit control + badge on web
+ *  and mobile so the vocabulary never drifts: cover → "Crop" (fills, crops the
+ *  overflow), contain → "Fit" (letterboxes whole, no crop). Use this everywhere a
+ *  fit toggle/badge shows text — for cameras, screen-captures, any media. */
+export function fitLabel(fit: FitMode): 'Crop' | 'Fit' {
+  return fit === 'cover' ? 'Crop' : 'Fit';
+}
+
 /** Normalize z-orders to a contiguous 0..n-1 sequence following the items' draw
  *  order (sorted by z ascending). Call after any reorder so z stays gap-free and
  *  predictable across save/reload + both platforms. Returns a new array. */
