@@ -35,6 +35,12 @@ import {
   type LiveSyncMsg,
   type ManifestEntry,
 } from './live';
+import {
+  applyFullScene,
+  emptyRenderedScene,
+  type RenderedScene,
+  type SceneOverlay,
+} from './scene';
 
 /** The viewer's lifecycle phase (see module header). */
 export type ViewerPhase = 'connecting' | 'preloading' | 'live' | 'ended';
@@ -49,6 +55,12 @@ export interface ViewerState {
   slots: LiveSlots;
   /** The streamer's selected scene (rides live-sync), or null → local default. */
   scene: LiveScene | null;
+  /** The COMPLETE rendered overlay layer for the CURRENT scene — the FULL-REPLACE
+   *  unit. Every scene switch ships the whole set (per-scene rects + payloads) and
+   *  this is replaced wholesale (monotonic by nonce), so the previous scene's
+   *  overlays can never remain and nothing is ever snapped to a centered default.
+   *  The bot's participation overlay is folded INTO this set at its matching slot. */
+  rendered: RenderedScene;
   /** The presenter's pan/zoom on the active doc (so the initial view mirrors the
    *  streamer). null → fit/no-pan. Viewers may locally diverge after. */
   docPresenter: DocPresenterState | null;
@@ -67,6 +79,7 @@ export function initialViewerState(): ViewerState {
     phase: 'connecting',
     slots: emptySlots(),
     scene: null,
+    rendered: emptyRenderedScene(),
     docPresenter: null,
     manifest: null,
     loadedBytes: 0,
@@ -94,7 +107,14 @@ export function applyLiveSync(state: ViewerState, msg: LiveSyncMsg): ViewerState
   const isEndWipe =
     msg.doc === null && (msg.scene === null || msg.scene === undefined) && !manifestHasMaterials(msg.manifest);
   if (isEndWipe && state.phase !== 'connecting') {
-    return { ...state, phase: 'ended', slots: clearAllSlots(), scene: null, docPresenter: null };
+    return {
+      ...state,
+      phase: 'ended',
+      slots: clearAllSlots(),
+      scene: null,
+      rendered: emptyRenderedScene(),
+      docPresenter: null,
+    };
   }
 
   // Fold the doc slot. A doc instance lands in the doc slot; null clears it.
@@ -128,13 +148,69 @@ export function applyLiveSync(state: ViewerState, msg: LiveSyncMsg): ViewerState
 }
 
 /** Feed the server-bot's active participation overlay into the overlay slot. The
- *  doc slot is untouched (the two slots are independent). Pure. */
+ *  doc slot is untouched (the two slots are independent). Pure.
+ *
+ *  ALSO folds the participation overlay into the FULL-REPLACE rendered layer: the
+ *  scene-sync built every overlay slot with instance:null (the bot owns the live
+ *  participation instance), so here we drop the bot's instance into the FIRST
+ *  empty/participation overlay slot — keeping the rendered set the single source of
+ *  truth the viewer paints, positioned at the per-scene authored rect. */
 export function applyOverlayChanged(state: ViewerState, overlay: OverlayInstance | null): ViewerState {
-  if (!overlay) return { ...state, slots: { ...state.slots, activeOverlay: null } };
+  if (!overlay) {
+    return {
+      ...state,
+      slots: { ...state.slots, activeOverlay: null },
+      rendered: clearParticipationOverlay(state.rendered),
+    };
+  }
   // Defensive: only a participation kind ever belongs in the overlay slot; a doc
   // from the bot (shouldn't happen) is ignored so it can't clobber the doc slot.
   if (overlay.kind === 'doc') return state;
-  return { ...state, slots: setSlot(state.slots, overlay) };
+  return {
+    ...state,
+    slots: setSlot(state.slots, overlay),
+    rendered: foldParticipationOverlay(state.rendered, overlay),
+  };
+}
+
+/** Apply a COMPLETE-scene snapshot (the producer's full-replace scene-sync) to the
+ *  rendered overlay layer. This is the heart of P0.3: the previous scene's overlays
+ *  are dropped wholesale and ONLY the new scene's set (at its per-scene rects) is
+ *  rendered — monotonic by nonce so a late/duplicate packet can't regress. The
+ *  bot's participation overlay (held in slots.activeOverlay) is re-folded so a scene
+ *  switch keeps the running poll visible at the NEW scene's overlay rect. Pure. */
+export function applySceneSync(state: ViewerState, next: RenderedScene): ViewerState {
+  const replaced = applyFullScene(state.rendered, next);
+  if (replaced === state.rendered) return state; // stale snapshot → no change
+  // Re-fold the currently-active participation overlay into the fresh layer so it
+  // tracks the new scene's overlay slot (the new set was built with instance:null
+  // for overlay slots, since the bot — not the producer — owns the live instance).
+  const withOverlay = state.slots.activeOverlay
+    ? foldParticipationOverlay(replaced, state.slots.activeOverlay)
+    : replaced;
+  return { ...state, rendered: withOverlay };
+}
+
+/** Place a participation overlay instance into the rendered layer's FIRST overlay
+ *  slot (draw order), replacing whatever instance it held. Returns `scene` unchanged
+ *  when there's no overlay slot in the current scene — so a poll with nowhere
+ *  authored to go is simply NOT shown (never centered). Pure. */
+function foldParticipationOverlay(scene: RenderedScene, overlay: OverlayInstance): RenderedScene {
+  const idx = scene.overlays.findIndex((o) => o.type === 'overlay');
+  if (idx < 0) return scene; // no overlay slot in this scene → don't render it
+  const overlays = scene.overlays.map((o, i): SceneOverlay => (i === idx ? { ...o, instance: overlay } : o));
+  return { ...scene, overlays };
+}
+
+/** Empty every participation (overlay-type) slot in the rendered layer — used when
+ *  the bot clears the active overlay (`next` with nothing staged). Doc slots are
+ *  untouched. Pure. */
+function clearParticipationOverlay(scene: RenderedScene): RenderedScene {
+  if (!scene.overlays.some((o) => o.type === 'overlay' && o.instance)) return scene;
+  const overlays = scene.overlays.map((o): SceneOverlay =>
+    o.type === 'overlay' ? { ...o, instance: null } : o,
+  );
+  return { ...scene, overlays };
 }
 
 /** Advance the preload progress (called by the byte-fetch layer as it streams the

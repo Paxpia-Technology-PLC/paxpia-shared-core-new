@@ -47,6 +47,23 @@ export {
   unassignScene,
   initialSceneId,
 } from './streaming/live';
+// FULL-REPLACE scene-overlay model + scene-sync wire — a scene switch ships the
+// COMPLETE overlay set (per-scene rects + payloads) and the viewer replaces its
+// whole overlay layer (idempotent, monotonic by nonce → no remnants, no centered
+// fallback). Shared so web + mobile converge to the exact current scene.
+export type { SceneOverlay, RenderedScene, SceneSyncMsg } from './streaming/scene';
+export {
+  emptyRenderedScene,
+  applyFullScene,
+  visibleOverlays,
+  sceneOverlayFor,
+  buildRenderedScene,
+  slotItemForInstance,
+  isSceneSyncMsg,
+  encodeSceneSyncMsg,
+  decodeSceneSyncMsg,
+  SCENE_WIRE_VERSION,
+} from './streaming/scene';
 // Live VIEWER state machine + in-memory preload cache (the model mobile reuses).
 export type { ViewerPhase, ViewerState } from './streaming/viewer';
 export {
@@ -54,6 +71,7 @@ export {
   manifestHasMaterials,
   applyLiveSync,
   applyOverlayChanged,
+  applySceneSync,
   applyPreloadProgress,
   admitToLive,
   setLocalDocPresenter,

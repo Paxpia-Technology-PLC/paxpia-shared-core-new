@@ -6,6 +6,10 @@ export * from './types';
 // The two-slot live model + live-sync wire + scene-assignment model. These names
 // don't collide with the layout barrel, so the top-level index re-exports them.
 export * from './live';
+// The FULL-REPLACE scene-overlay model + scene-sync wire: a scene switch carries
+// the COMPLETE overlay set (per-scene rects + payloads) and the viewer replaces its
+// whole overlay layer (no deltas → no remnants, never a centered/default snap).
+export * from './scene';
 // The live VIEWER state machine (connecting → preloading → live → ended) + the
 // in-memory preload cache contract. Web + RN are thin render layers over these.
 export * from './viewer';

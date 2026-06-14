@@ -15,7 +15,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "tsc",
-    "test": "node --experimental-strip-types test/target.test.ts"
+    "test": "node --experimental-strip-types test/target.test.ts && node --experimental-strip-types test/scene.test.ts && node --experimental-strip-types test/previewSwap.test.ts"
   },
   "devDependencies": {
     "typescript": "^5.6.3"
