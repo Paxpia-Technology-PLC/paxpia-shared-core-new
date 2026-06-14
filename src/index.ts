@@ -71,6 +71,34 @@ export {
   isRenderableMime,
   isPdfEntry,
 } from './streaming/preload';
+// VIEWER-ENTRY GATE — the ordered fetch-manifest → preload → THEN-connect machine
+// the room connection hangs on (kills the manifest-vs-room race that black-screened
+// + closed the PC on mobile). The screen connects ONLY when isEntryReady(state).
+export type { EntryPhase, EntryState } from './streaming/entry';
+export {
+  initialEntryState,
+  beginEntry,
+  onManifestFetched,
+  onManifestFailed,
+  onEntryPreloadProgress,
+  markEntryReady,
+  resetEntry,
+  isEntryReady,
+  isEntryGating,
+  entryPreloadPct,
+  entryStatusLabel,
+} from './streaming/entry';
+// DOC-RENDER MODEL — image/pdf/placeholder render plan + shared zoom clamp, so the
+// web + RN doc renderers pick the SAME path for the same doc (only the leaf
+// primitive differs). Gives the RN renderer a real PDF branch.
+export type { DocRenderKind, DocRenderPlan } from './streaming/docRender';
+export {
+  resolveDocRender,
+  isDisplayableUrl,
+  clampDocZoom,
+  DOC_MIN_ZOOM,
+  DOC_MAX_ZOOM,
+} from './streaming/docRender';
 // Doc-viewer local takeover + resync state machine (scene changes absolute;
 // doc-source changes deferrable during takeover). Web + mobile share it.
 export type {

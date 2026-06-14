@@ -10,6 +10,15 @@ export * from './live';
 // in-memory preload cache contract. Web + RN are thin render layers over these.
 export * from './viewer';
 export * from './preload';
+// The VIEWER-ENTRY GATE: the ordered fetch-manifest → preload → THEN-connect state
+// machine the room connection hangs on, so the manifest can never race the media
+// (the mobile "PC manager closed / stale PNG" fix). Distinct from viewer.ts's
+// IN-ROOM lifecycle — this gates ENTRY, before any connect.
+export * from './entry';
+// The DOC-RENDER MODEL: turns a synced `doc` overlay + the manifest into a render
+// PLAN (image / pdf / placeholder) so web + RN pick the SAME path; only the leaf
+// primitive (canvas vs WebView/native) differs.
+export * from './docRender';
 // The UNIFIED room-join handshake: canonical viewer Room/connect options (the
 // adaptiveStream-off churn fix, made the single source of truth), the
 // connect/reuse/defer-teardown reconciler (focus-blip vs real navigation), the
