@@ -119,6 +119,18 @@ export {
   DOC_MIN_ZOOM,
   DOC_MAX_ZOOM,
 } from './streaming/docRender';
+// DOC VIEWPORT MATH — pure zoom-at-cursor / clamp-scale / clamp-pan + reset-to-fit,
+// so the web DocOverlay (wheel + arrow-keys + drag) and the mobile DocPdfRenderer
+// (pinch + pan) share the EXACT same transform brain; only the event source differs.
+export type { DocViewport, ViewportSize, ViewportPoint } from './streaming/docViewport';
+export {
+  fitViewport,
+  clampPan,
+  panBy,
+  zoomAtPoint,
+  zoomByFactor,
+  DOC_ARROW_PAN_FRACTION,
+} from './streaming/docViewport';
 // Doc-viewer local takeover + resync state machine (scene changes absolute;
 // doc-source changes deferrable during takeover). Web + mobile share it.
 export type {
@@ -174,7 +186,13 @@ export {
 // reconciler (connect decision) + the entry gate (manifest ordering). Web + RN
 // classify the SAME set of strings, so a teardown race can't surface on one
 // platform after the other learned to ignore it.
-export type { ConnectGeneration, ConnectGuard } from './streaming/connection';
+export type {
+  ConnectGeneration,
+  ConnectGuard,
+  DisconnectKind,
+  SdkConnState,
+  RoomStatus,
+} from './streaming/connection';
 export {
   newConnectGuard,
   beginConnect,
@@ -184,6 +202,13 @@ export {
   connectionErrorMessage,
   shouldSwallowConnectError,
   BENIGN_CONNECTION_ERROR_FRAGMENTS,
+  // Disconnect-reason classification + unified room-status model (the "room
+  // unavailable / offline" decision), shared web + RN.
+  DISCONNECT_REASON,
+  classifyDisconnect,
+  deriveRoomStatus,
+  isBlockingStatus,
+  canRejoin,
 } from './streaming/connection';
 // Shared CDN-snippet PREVIEW state machine (single stable url, refresh cadence,
 // exponential back-off, one-load-in-flight). Web + mobile share this brain.

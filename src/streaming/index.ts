@@ -23,6 +23,10 @@ export * from './entry';
 // PLAN (image / pdf / placeholder) so web + RN pick the SAME path; only the leaf
 // primitive (canvas vs WebView/native) differs.
 export * from './docRender';
+// The DOC VIEWPORT MATH: pure zoom-at-point / clamp-scale / clamp-pan helpers the
+// doc/image viewer uses so wheel/pinch zoom (centred on the cursor) + arrow/drag
+// pan are identical on web (DocOverlay) and mobile (DocPdfRenderer).
+export * from './docViewport';
 // The UNIFIED room-join handshake: canonical viewer Room/connect options (the
 // adaptiveStream-off churn fix, made the single source of truth), the
 // connect/reuse/defer-teardown reconciler (focus-blip vs real navigation), the

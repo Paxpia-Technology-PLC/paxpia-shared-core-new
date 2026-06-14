@@ -112,13 +112,7 @@ export function resolveDocRender(
   return { kind: 'empty', page: 0, pageCount: 0, title };
 }
 
-/** The zoom clamp shared by both doc renderers (web wheel-zoom + RN pinch). The
- *  single source so a pinch on mobile and a wheel on web bottom/top out the same. */
-export const DOC_MIN_ZOOM = 1;
-export const DOC_MAX_ZOOM = 4;
-
-/** Clamp a proposed zoom into [DOC_MIN_ZOOM, DOC_MAX_ZOOM]. Pure; shared so the
- *  gesture math can't drift between platforms. */
-export function clampDocZoom(z: number): number {
-  return Math.min(DOC_MAX_ZOOM, Math.max(DOC_MIN_ZOOM, z));
-}
+// The zoom clamp (DOC_MIN_ZOOM / DOC_MAX_ZOOM / clampDocZoom) now lives in
+// docViewport.ts alongside the rest of the pan/zoom math (single source of truth);
+// re-exported here so the long-standing `from './docRender'` imports keep working.
+export { DOC_MIN_ZOOM, DOC_MAX_ZOOM, clampDocZoom } from './docViewport';
