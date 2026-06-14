@@ -219,6 +219,43 @@ export { PreviewMachine, newPreviewMachine } from './streaming/preview';
 // (mobile) flash when a tile's preview_url changes. Web + mobile drive it identically.
 export type { PreviewSlot, SwapAction, SwapSnapshot } from './streaming/preview';
 export { PreviewSwapGate, newPreviewSwapGate } from './streaming/preview';
+// EPHEMERAL LIVE CHAT: flat LiveComment + ring-buffer reducer + reliable-track wire
+// (CHAT_TOPIC). A viewer publishes; the streamer dashboard + every viewer fold it
+// through appendComment. No backend — pure fan-out. Web + RN share the whole model.
+export type { LiveComment, LiveCommentKind, ChatLog, ChatMsg, ChatAuthor } from './streaming/chat';
+export {
+  CHAT_CAP,
+  CHAT_TOPIC,
+  CHAT_WIRE_VERSION,
+  emptyChatLog,
+  appendComment,
+  commentAuthorLabel,
+  isChatMsg,
+  encodeChatMsg,
+  decodeChatMsg,
+  makeComment,
+  makeGift,
+} from './streaming/chat';
+// LIVE VIEWERS: LiveViewer derived from a room participant (identity → stable user
+// id; neutral guest until enriched from chat), the gifter-pinned/newest-first
+// ordering helper, the deposit-bump, and the P1.6 stage-interactivity SCAFFOLD
+// (raise-hand/invite/opt-in/promote types + STAGE_TOPIC + no-op handler).
+export type { LiveViewer, ViewerMap, ParticipantLike, StageAction, StageRequest } from './streaming/viewers';
+export {
+  viewerLabel,
+  viewerIdFromIdentity,
+  participantToViewer,
+  isWatcher,
+  addViewer,
+  removeViewer,
+  enrichFromComment,
+  applyGift,
+  orderViewers,
+  STAGE_TOPIC,
+  STAGE_WIRE_VERSION,
+  isStageRequest,
+  applyStageRequest,
+} from './streaming/viewers';
 export * from './overlays';
 // Layout: the canonical resizable/reorderable scene model (LayoutItem, Scene,
 // clampRect/moveItem/resizeItem/reorderZ/fitToBox). RN-portable; web + mobile share it.

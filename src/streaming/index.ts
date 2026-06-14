@@ -47,3 +47,13 @@ export * from './connection';
 // in-flight). Web + RN render layers are thin shells over these.
 export * from './identity';
 export * from './preview';
+// EPHEMERAL LIVE CHAT: the flat LiveComment model, the ring-buffer reducer + cap,
+// and the reliable-data-track wire (CHAT_TOPIC). A viewer publishes a chat.msg;
+// the streamer dashboard AND every viewer fold it through appendComment. No
+// backend — fan-out only. Web + RN share the model + encode/decode.
+export * from './chat';
+// LIVE VIEWERS: derive a LiveViewer from a room participant (identity → user id;
+// neutral guest until enriched from their chat profile), the gifter-pinned /
+// newest-first ordering helper, the deposit-bump, and the P1.6 stage-interactivity
+// SCAFFOLD (raise-hand/invite/opt-in/promote types + topic + no-op handler).
+export * from './viewers';
