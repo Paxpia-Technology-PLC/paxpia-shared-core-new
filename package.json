@@ -14,7 +14,8 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "tsc"
+    "build": "tsc",
+    "test": "node --experimental-strip-types test/target.test.ts"
   },
   "devDependencies": {
     "typescript": "^5.6.3"
