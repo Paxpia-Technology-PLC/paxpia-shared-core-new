@@ -13,3 +13,8 @@ export * from './preload';
 // The doc-viewer LOCAL TAKEOVER state machine (follow ⇄ takeover + resync, with
 // scene changes absolute / doc-source changes deferrable). Web + RN share it.
 export * from './docTakeover';
+// PUBLIC streamer identity (username/displayName/avatar) for live-room + feed
+// tiles, and the shared CDN-snippet PREVIEW state machine (refresh/back-off/
+// in-flight). Web + RN render layers are thin shells over these.
+export * from './identity';
+export * from './preview';

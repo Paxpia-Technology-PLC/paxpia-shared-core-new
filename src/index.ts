@@ -86,6 +86,18 @@ export {
   onStreamerSceneChange,
   resyncDoc,
 } from './streaming/docTakeover';
+// PUBLIC streamer identity for live-room + feed tiles (name/@handle/avatar, no
+// UUID) + the mapping off the streaming rooms payload.
+export type { PublicStreamerIdentity, RoomStreamerFields } from './streaming/identity';
+export {
+  streamerIdentityFromRoom,
+  streamerDisplayLabel,
+  hasPublicIdentity,
+} from './streaming/identity';
+// Shared CDN-snippet PREVIEW state machine (single stable url, refresh cadence,
+// exponential back-off, one-load-in-flight). Web + mobile share this brain.
+export type { PreviewConfig, PreviewAction, PreviewSnapshot } from './streaming/preview';
+export { PreviewMachine, newPreviewMachine } from './streaming/preview';
 export * from './overlays';
 // Layout: the canonical resizable/reorderable scene model (LayoutItem, Scene,
 // clampRect/moveItem/resizeItem/reorderZ/fitToBox). RN-portable; web + mobile share it.
