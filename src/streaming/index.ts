@@ -10,6 +10,12 @@ export * from './live';
 // in-memory preload cache contract. Web + RN are thin render layers over these.
 export * from './viewer';
 export * from './preload';
+// The UNIFIED room-join handshake: canonical viewer Room/connect options (the
+// adaptiveStream-off churn fix, made the single source of truth), the
+// connect/reuse/defer-teardown reconciler (focus-blip vs real navigation), the
+// viewer-identity invariants (own-stream-as-viewer never collides), and the
+// muted-on-open resolution from a cached preference. Web + RN share ALL of it.
+export * from './join';
 // The doc-viewer LOCAL TAKEOVER state machine (follow ⇄ takeover + resync, with
 // scene changes absolute / doc-source changes deferrable). Web + RN share it.
 export * from './docTakeover';

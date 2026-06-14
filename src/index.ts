@@ -94,6 +94,32 @@ export {
   streamerDisplayLabel,
   hasPublicIdentity,
 } from './streaming/identity';
+// UNIFIED room-join handshake: canonical viewer Room/connect options (the
+// adaptiveStream-off decoder-churn fix as the single source of truth), the
+// connect/reuse/defer-teardown reconciler (focus-blip vs real navigation), the
+// viewer-identity invariants (own-stream-as-viewer never collides at the SFU),
+// and the muted-on-open resolution from a cached preference. Web + mobile share it.
+export type {
+  ViewerRoomOptions,
+  ViewerConnectOptions,
+  JoinTarget,
+  JoinCurrent,
+  JoinAction,
+  SoundPreference,
+} from './streaming/join';
+export {
+  viewerRoomOptions,
+  viewerConnectOptions,
+  isViewerIdentity,
+  isSelfView,
+  reconcileJoin,
+  TEARDOWN_GRACE_MS,
+  CONNECT_DEBOUNCE_MS,
+  resolveInitialMuted,
+  initialSoundOn,
+  soundPreferenceFor,
+  SOUND_PREF_CACHE_KEY,
+} from './streaming/join';
 // Shared CDN-snippet PREVIEW state machine (single stable url, refresh cadence,
 // exponential back-off, one-load-in-flight). Web + mobile share this brain.
 export type { PreviewConfig, PreviewAction, PreviewSnapshot } from './streaming/preview';
