@@ -10,3 +10,6 @@ export * from './live';
 // in-memory preload cache contract. Web + RN are thin render layers over these.
 export * from './viewer';
 export * from './preload';
+// The doc-viewer LOCAL TAKEOVER state machine (follow ⇄ takeover + resync, with
+// scene changes absolute / doc-source changes deferrable). Web + RN share it.
+export * from './docTakeover';

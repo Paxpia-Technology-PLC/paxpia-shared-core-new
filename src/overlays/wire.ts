@@ -215,6 +215,57 @@ export function withOptimisticVote(
   return out;
 }
 
+/** The optimistic tally + total a voter should SEE, folding an un-acked local
+ *  vote (first-vote OR re-vote/change-answer) into the server tallies. This is the
+ *  ONE place the fold lives so web + mobile (and the streamer preview) compute the
+ *  identical bar before the server's authoritative tick lands.
+ *
+ *  • No optimistic vote, or it equals the committed server choice → server tallies
+ *    unchanged.
+ *  • FIRST vote (no committed server choice yet) → +1 on the optimistic choice;
+ *    total +1.
+ *  • RE-VOTE (server already counts me on `myChoice`) → MOVE one from the old bar
+ *    to the new bar (old−1, new+1); total unchanged — NEVER both-zero. The clamp
+ *    guards a stale/short server tally so the old bar can't go negative.
+ *
+ *  Pure — returns fresh objects. `serverTotal` defaults to the sum of the tallies. */
+export function foldOptimisticTally(
+  serverTallies: Record<string, number>,
+  myChoice: string | undefined,
+  optimisticChoice: string | undefined,
+  serverTotal?: number,
+): { tallies: Record<string, number>; total: number } {
+  const tallies = { ...serverTallies };
+  let total = serverTotal ?? totalVotes(serverTallies);
+  if (optimisticChoice && optimisticChoice !== myChoice) {
+    if (myChoice != null) {
+      // Re-vote: move one vote from the old choice to the new (net total unchanged).
+      tallies[myChoice] = Math.max(0, (tallies[myChoice] ?? 0) - 1);
+      tallies[optimisticChoice] = (tallies[optimisticChoice] ?? 0) + 1;
+    } else {
+      // First vote not yet server-counted: net +1.
+      tallies[optimisticChoice] = (tallies[optimisticChoice] ?? 0) + 1;
+      total += 1;
+    }
+  }
+  return { tallies, total };
+}
+
+/** Does a results tick belong to the overlay a client currently shows? The bot is
+ *  authoritative for `gen`; a client that minted a LOCAL gen (e.g. the streamer's
+ *  monotonic activate counter) can lag the bot's per-id gen for a beat, which used
+ *  to make the streamer dashboard DISCARD every valid tally (gens never matched →
+ *  "nothing reaches the streamer"). So we match on overlay id and accept any tick
+ *  whose gen is ≥ the locally-known gen (the bot only moves gen forward per id);
+ *  a tick for a strictly OLDER round is still ignored. Pure. */
+export function resultsMatchOverlay(
+  overlay: Pick<OverlayInstance, 'id' | 'gen'> | null | undefined,
+  results: Pick<OverlayResultsMsg, 'overlayId' | 'gen'> | null | undefined,
+): boolean {
+  if (!overlay || !results) return false;
+  return results.overlayId === overlay.id && results.gen >= overlay.gen;
+}
+
 /** Build the results message the bot broadcasts from persisted rows. Centralizing
  *  it here keeps the server's broadcast shape identical to what clients expect. */
 export function buildResultsMsg(

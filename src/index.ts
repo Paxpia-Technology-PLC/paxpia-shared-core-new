@@ -71,6 +71,21 @@ export {
   isRenderableMime,
   isPdfEntry,
 } from './streaming/preload';
+// Doc-viewer local takeover + resync state machine (scene changes absolute;
+// doc-source changes deferrable during takeover). Web + mobile share it.
+export type {
+  DocTakeoverStatus,
+  DocTakeoverState,
+  PendingDocTarget,
+} from './streaming/docTakeover';
+export {
+  initialDocTakeover,
+  isTakenOver,
+  takeOverDoc,
+  onStreamerDocUpdate,
+  onStreamerSceneChange,
+  resyncDoc,
+} from './streaming/docTakeover';
 export * from './overlays';
 // Layout: the canonical resizable/reorderable scene model (LayoutItem, Scene,
 // clampRect/moveItem/resizeItem/reorderZ/fitToBox). RN-portable; web + mobile share it.
