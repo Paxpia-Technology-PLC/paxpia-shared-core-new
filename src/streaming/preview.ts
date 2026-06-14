@@ -174,3 +174,139 @@ export class PreviewMachine {
 export function newPreviewMachine(cfg?: PreviewConfig): PreviewMachine {
   return new PreviewMachine(cfg);
 }
+
+// ── PREVIEW HOT-SWAP GATE ─────────────────────────────────────────────────────
+// The shared "preload the NEXT preview, keep showing the CURRENT one, swap ONLY
+// when the next has genuinely decoded a frame" ready-gate. PreviewMachine above
+// owns the *same-url refresh* loop (freshness via cache headers); THIS owns the
+// orthogonal *url-CHANGE* transition — when the backend assigns a new preview
+// version to a tile, the visible source must never blank to avatar (web) or black
+// (mobile) mid-swap.
+//
+// The bug it fixes: platforms used to point the visible element at the new url
+// immediately (or flip to a not-yet-loaded buffer). For the few hundred ms before
+// the new bytes decode, the element paints nothing → the poster (avatar/cold
+// image) shows through. The gate inverts the ordering: PRELOAD into a hidden slot,
+// hold the current frame, and SWAP only on the platform's decoded-frame signal.
+//
+// Pure + clockless + DOM/RN-free, exactly like PreviewMachine, so web (two <video>
+// buffers + requestVideoFrameCallback/canplaythrough) and mobile (two RN players +
+// onReadyToDisplay) drive the IDENTICAL logic; only the leaf preload/ready signal
+// differs.
+
+/** Which of the two media slots a platform double-buffers between. */
+export type PreviewSlot = 'a' | 'b';
+
+/** What the platform should do with its two slots after a gate call. */
+export type SwapAction =
+  /** Nothing changed — current slot stays visible, no preload needed. */
+  | { type: 'idle' }
+  /** Preload `url` into the HIDDEN slot (`into`) and wait for its decoded-frame
+   *  signal. Keep the currently visible slot painted untouched until then. */
+  | { type: 'preload'; url: string; into: PreviewSlot }
+  /** The hidden slot is decoded-ready — make `slot` the visible one NOW. The new
+   *  url is fully painted, so this swap shows no intermediate frame. */
+  | { type: 'swap'; slot: PreviewSlot };
+
+/** Serializable snapshot of the gate (tests / React mirror). */
+export interface SwapSnapshot {
+  /** The slot currently painted to the user. */
+  visible: PreviewSlot;
+  /** The url that slot is showing (undefined before the first preview lands). */
+  visibleUrl?: string;
+  /** The url being preloaded into the hidden slot, if a transition is in flight. */
+  pendingUrl?: string;
+}
+
+/**
+ * The hot-swap gate. One per tile, alongside (not replacing) the PreviewMachine.
+ *
+ *   const g = new PreviewSwapGate();
+ *   // url assigned/changes:
+ *   const a = g.request(url);     // first url → {preload into:'a'}; a CHANGE → {preload into:hidden}
+ *   // platform preloads a.url into a.into, waits for a DECODED frame, then:
+ *   const b = g.onReady(a.into);  // → {swap slot} (or {idle} if it's stale)
+ *   // if the preload errors instead:
+ *   g.onError(a.into);            // → drops the pending transition; current frame stays
+ *
+ * Invariants that kill the avatar/black flash:
+ *   • The visible slot is NEVER changed except by an explicit {swap}, which is only
+ *     emitted AFTER the platform confirms the hidden slot decoded a frame.
+ *   • A url-change targets the HIDDEN slot, so the visible slot keeps its last good
+ *     frame the entire time the new url is loading.
+ *   • Re-requesting the url that's already visible is a no-op ({idle}) — no reload,
+ *     no flicker. A request matching the in-flight pending url is also a no-op.
+ */
+export class PreviewSwapGate {
+  private visible: PreviewSlot = 'a';
+  private visibleUrl?: string;
+  private pendingUrl?: string;
+
+  /** First url, or a changed url. Returns the slot to preload into (the hidden one)
+   *  or idle when nothing needs to change. The visible slot is left untouched. */
+  request(url: string | undefined): SwapAction {
+    const next = url || undefined;
+    // Already showing it, with no competing transition → nothing to do.
+    if (next === this.visibleUrl && !this.pendingUrl) return { type: 'idle' };
+    // Already preloading exactly this → don't restart the load (avoids a flicker
+    // loop if request() fires repeatedly with the same new url).
+    if (next === this.pendingUrl) return { type: 'idle' };
+    // Cleared → nothing to preload; visible slot keeps its last frame (the platform
+    // decides whether to hide the element, but the gate never forces a blank).
+    if (!next) {
+      this.pendingUrl = undefined;
+      return { type: 'idle' };
+    }
+    // A genuine change: preload into the hidden slot, keep the visible one painted.
+    this.pendingUrl = next;
+    return { type: 'preload', url: next, into: this.hidden() };
+  }
+
+  /** The hidden slot reported a DECODED first frame for its preload. If it still
+   *  matches the pending transition, swap it to visible; otherwise it's stale. */
+  onReady(slot: PreviewSlot): SwapAction {
+    // Stale ready (a newer request superseded this one, or it's the visible slot
+    // re-firing its own ready) → ignore; don't disturb what's painted.
+    if (slot === this.visible || this.pendingUrl === undefined) return { type: 'idle' };
+    this.visible = slot;
+    this.visibleUrl = this.pendingUrl;
+    this.pendingUrl = undefined;
+    return { type: 'swap', slot };
+  }
+
+  /** The pending preload failed. Drop the transition; the visible slot keeps its
+   *  current frame (no avatar/black fallback). Returns idle — the caller's own
+   *  PreviewMachine back-off governs whether/when to retry the url. */
+  onError(slot: PreviewSlot): SwapAction {
+    if (slot === this.hidden()) this.pendingUrl = undefined;
+    return { type: 'idle' };
+  }
+
+  /** The slot NOT currently visible — where a preload goes. */
+  hidden(): PreviewSlot {
+    return this.visible === 'a' ? 'b' : 'a';
+  }
+
+  /** The slot currently painted. */
+  visibleSlot(): PreviewSlot {
+    return this.visible;
+  }
+
+  /** Make `slot` visible directly — used by the SAME-url refresh path, where the
+   *  hidden buffer has been reloaded with the CURRENT url and decoded a fresh
+   *  frame. Like {swap}, the platform only calls this AFTER a decoded-frame signal,
+   *  so it never reveals the poster. (A url-CHANGE goes through request()/onReady()
+   *  instead, which also tracks visibleUrl/pendingUrl.) */
+  setVisible(slot: PreviewSlot): void {
+    this.visible = slot;
+  }
+
+  snapshot(): SwapSnapshot {
+    return { visible: this.visible, visibleUrl: this.visibleUrl, pendingUrl: this.pendingUrl };
+  }
+}
+
+/** Convenience constructor (matches the module's fn style). */
+export function newPreviewSwapGate(): PreviewSwapGate {
+  return new PreviewSwapGate();
+}

@@ -171,6 +171,11 @@ export {
 // exponential back-off, one-load-in-flight). Web + mobile share this brain.
 export type { PreviewConfig, PreviewAction, PreviewSnapshot } from './streaming/preview';
 export { PreviewMachine, newPreviewMachine } from './streaming/preview';
+// PREVIEW HOT-SWAP GATE — the shared "preload the next preview, hold the current
+// frame, swap ONLY on a decoded frame" ready-gate. Kills the avatar (web) / black
+// (mobile) flash when a tile's preview_url changes. Web + mobile drive it identically.
+export type { PreviewSlot, SwapAction, SwapSnapshot } from './streaming/preview';
+export { PreviewSwapGate, newPreviewSwapGate } from './streaming/preview';
 export * from './overlays';
 // Layout: the canonical resizable/reorderable scene model (LayoutItem, Scene,
 // clampRect/moveItem/resizeItem/reorderZ/fitToBox). RN-portable; web + mobile share it.
