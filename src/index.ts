@@ -28,6 +28,9 @@ export type {
   LiveScene,
   LiveSceneItem,
   SceneAssignment,
+  ManifestEntry,
+  LiveManifest,
+  DocPresenterState,
 } from './streaming/live';
 export {
   LIVESYNC_WIRE_VERSION,
@@ -44,6 +47,30 @@ export {
   unassignScene,
   initialSceneId,
 } from './streaming/live';
+// Live VIEWER state machine + in-memory preload cache (the model mobile reuses).
+export type { ViewerPhase, ViewerState } from './streaming/viewer';
+export {
+  initialViewerState,
+  manifestHasMaterials,
+  applyLiveSync,
+  applyOverlayChanged,
+  applyPreloadProgress,
+  admitToLive,
+  setLocalDocPresenter,
+  preloadPct,
+  buildManifest,
+  manifestEntry,
+} from './streaming/viewer';
+export type { CachedDoc, PreloadCache } from './streaming/preload';
+export {
+  newPreloadCache,
+  isWarm,
+  getCachedDoc,
+  putCachedDoc,
+  materialsToPreload,
+  isRenderableMime,
+  isPdfEntry,
+} from './streaming/preload';
 export * from './overlays';
 // Layout: the canonical resizable/reorderable scene model (LayoutItem, Scene,
 // clampRect/moveItem/resizeItem/reorderZ/fitToBox). RN-portable; web + mobile share it.

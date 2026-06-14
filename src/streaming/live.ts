@@ -80,11 +80,64 @@ export function slotInstance(slots: LiveSlots, slot: LiveSlot): OverlayInstance 
 /** Wire version for the live-sync envelope (independent of the overlay wire). */
 export const LIVESYNC_WIRE_VERSION = 1;
 
+/** One entry in the room's MATERIAL MANIFEST — the id + size a viewer needs to
+ *  show a download-progress bar before it has fetched the bytes, plus the
+ *  PRESIGNED GET URL the STREAMER granted so an UNAUTH'd guest (who cannot call
+ *  the auth'd /materials/grant) can still fetch the raw file. `pages` is the count
+ *  for a PDF (drives a per-page render estimate); absent/1 for an image. */
+export interface ManifestEntry {
+  /** Material id (stable key for the in-memory preload cache, matches doc ids). */
+  id: string;
+  /** Display filename (slides.pdf, diagram.png …). */
+  filename: string;
+  /** MIME so the viewer decides image-vs-PDF render path without a HEAD. */
+  mime: string;
+  /** Raw size in bytes — the denominator for an honest progress bar. */
+  sizeBytes: number;
+  /** PDF page count when known (image ⇒ 1/absent). */
+  pageCount?: number;
+  /** Short-lived presigned GET URL the STREAMER granted for this material. The
+   *  guest fetches THIS (it never hits the auth'd grant endpoint). Absent only if
+   *  the streamer couldn't grant it (the viewer then renders video-only). */
+  url?: string;
+}
+
+/** The room's material manifest: every material the running class may show, with
+ *  the presigned URLs + total size so a viewer preloads ALL of them behind a
+ *  gated progress screen BEFORE entering. The STREAMER assembles this (it owns the
+ *  auth'd grant call) and broadcasts it over the data channel — this is what lets
+ *  an UNAUTH'd guest get the same preloaded experience. */
+export interface LiveManifest {
+  entries: ManifestEntry[];
+  totalSizeBytes: number;
+  count: number;
+}
+
+/** The PRESENTER's transform on the active doc — the page (already synced via the
+ *  doc instance) PLUS the pan/zoom the streamer is showing, so a joiner lands on
+ *  EXACTLY the streamer's view (then may locally adjust). Normalized so it's
+ *  resolution-independent: `zoom` is a scale ≥1; `panX`/`panY` are the translation
+ *  in CSS px at zoom (mirrors the renderer's offset). */
+export interface DocPresenterState {
+  /** Synced page index (redundant with doc.payload.page; carried for clarity). */
+  page: number;
+  /** Zoom scale (1 = fit). */
+  zoom: number;
+  /** Pan offset in px (renderer's translate(x,y)). */
+  panX: number;
+  panY: number;
+}
+
 /** Broadcast the full doc-slot + selected-scene snapshot. The streamer sends this
  *  on every doc change / scene switch AND replays it whenever a participant joins,
- *  so a late viewer reconstructs the doc slot (incl. its current page) and renders
- *  the correct scene layout. The participation overlay slot is NOT carried here —
- *  it's owned by the server bot's overlay.changed/request_state replay. */
+ *  so a late viewer reconstructs the doc slot (incl. its current page + the
+ *  presenter's pan/zoom) and renders the correct scene layout. The participation
+ *  overlay slot is NOT carried here — it's owned by the server bot's
+ *  overlay.changed/request_state replay.
+ *
+ *  It ALSO carries the room's MATERIAL MANIFEST (ids + sizes + presigned URLs) so
+ *  an UNAUTH'd guest, who can't call the auth'd grant endpoint, still has
+ *  everything to preload behind the gate and render docs. */
 export interface LiveSyncMsg {
   t: 'live.sync';
   v: number;
@@ -97,6 +150,13 @@ export interface LiveSyncMsg {
   /** The live document instance (kind 'doc'), or null when no doc is shown.
    *  Carries payload.page so the late joiner lands on the streamer's page. */
   doc: OverlayInstance | null;
+  /** The presenter's pan/zoom on the active doc (so a joiner mirrors the streamer's
+   *  view, not just the page). Absent ⇒ fit/no-pan default. */
+  docPresenter?: DocPresenterState | null;
+  /** The room's material manifest (ids + sizes + presigned URLs). Present on the
+   *  go-live announce + every participant-join replay so a guest can preload +
+   *  render materials. Absent ⇒ this stream has no materials (no preload gate). */
+  manifest?: LiveManifest | null;
 }
 
 /** A minimal, serializable scene snapshot ridden over the wire so viewers render
