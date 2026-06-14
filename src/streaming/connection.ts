@@ -138,3 +138,152 @@ export function shouldSwallowConnectError(
 ): boolean {
   return wasCancelled(guard, gen) || isBenignConnectionError(err);
 }
+
+// ── Disconnect-reason classification (the "room unavailable / offline" decision) ─
+//
+// When the SERVER sends a LEAVE (or the SDK gives up after exhausting its reconnect
+// budget), livekit-client fires `RoomEvent.Disconnected(reason?: DisconnectReason)`.
+// The reason is the ONLY signal that distinguishes "this room is gone / you were
+// removed / it's blocked → show OFFLINE and stop" from "a transient drop the SDK is
+// already retrying". The render layer was throwing the reason away, so every
+// disconnect looked identical and 2 of the 3 viewer screens just sat on a black
+// frame forever. This classifier draws that line ONCE, shared web + RN.
+//
+// We MIRROR the numeric DisconnectReason values from livekit's protobuf here rather
+// than importing livekit-client — this module is intentionally SDK-free so it stays
+// usable from web AND RN/Hermes. Keep in lockstep with livekit_models.proto.
+// Source: github.com/livekit/protocol/blob/main/protobufs/livekit_models.proto
+export const DISCONNECT_REASON = {
+  UNKNOWN_REASON: 0,
+  CLIENT_INITIATED: 1, // room.disconnect() — WE left
+  DUPLICATE_IDENTITY: 2, // another session took our identity
+  SERVER_SHUTDOWN: 3, // server instance going down (SDK reconnects to another)
+  PARTICIPANT_REMOVED: 4, // RoomService.RemoveParticipant — kicked
+  ROOM_DELETED: 5, // RoomService.DeleteRoom — room gone
+  STATE_MISMATCH: 6, // tried to resume a session the server forgot
+  JOIN_FAILURE: 7, // never fully connected
+  MIGRATION: 8, // cloud migrate (handled transparently)
+  SIGNAL_CLOSE: 9, // signal socket closed unexpectedly
+  ROOM_CLOSED: 10, // all standard participants left → room closed
+  USER_UNAVAILABLE: 11, // SIP callee no answer
+  USER_REJECTED: 12, // SIP callee rejected
+  SIP_TRUNK_FAILURE: 13, // SIP failure
+  CONNECTION_TIMEOUT: 14, // server timed out the session
+  MEDIA_FAILURE: 15, // media stream / media timeout
+  AGENT_ERROR: 16, // agent errored
+} as const;
+
+/** What a disconnect MEANS for the UI:
+ *   • 'user'        — WE initiated it (stop/teardown/navigate-away). No error UI;
+ *                     the screen is normally leaving anyway.
+ *   • 'unavailable' — TERMINAL server-side: the room is gone / deleted / closed, we
+ *                     were removed, the identity was taken, or a SIP/join failure.
+ *                     Show "stream offline / room unavailable" and OFFER a manual
+ *                     rejoin — but do NOT auto-loop a reconnect that will just fail.
+ *                     Also the bucket for "SDK gave up after its reconnect budget"
+ *                     (reason === undefined) and UNKNOWN.
+ *   • 'transient'   — server-driven but recoverable (shutdown/migration/signal-close/
+ *                     timeout/media). The SDK normally reconnects itself; if it ever
+ *                     surfaces as a final Disconnected, a fresh-token rejoin is sane. */
+export type DisconnectKind = 'user' | 'unavailable' | 'transient';
+
+/** Classify a `DisconnectReason` (numeric, or undefined when the SDK exhausted its
+ *  retry budget) into a UI-meaningful bucket. PURE — same input → same bucket on web
+ *  and mobile, so "is this room unavailable?" can never be answered differently on
+ *  the two platforms. The render layer maps the bucket to copy + whether to offer a
+ *  rejoin; this only draws the terminal/transient/user line. */
+export function classifyDisconnect(reason: number | undefined | null): DisconnectKind {
+  if (reason === undefined || reason === null) return 'unavailable'; // gave up after retries
+  switch (reason) {
+    case DISCONNECT_REASON.CLIENT_INITIATED:
+      return 'user';
+    case DISCONNECT_REASON.SERVER_SHUTDOWN:
+    case DISCONNECT_REASON.MIGRATION:
+    case DISCONNECT_REASON.SIGNAL_CLOSE:
+    case DISCONNECT_REASON.CONNECTION_TIMEOUT:
+    case DISCONNECT_REASON.MEDIA_FAILURE:
+    case DISCONNECT_REASON.AGENT_ERROR:
+      return 'transient';
+    default:
+      // DUPLICATE_IDENTITY, PARTICIPANT_REMOVED, ROOM_DELETED, STATE_MISMATCH,
+      // JOIN_FAILURE, ROOM_CLOSED, USER_UNAVAILABLE, USER_REJECTED,
+      // SIP_TRUNK_FAILURE, UNKNOWN_REASON → terminal, show offline/unavailable.
+      return 'unavailable';
+  }
+}
+
+// ── The unified VIEWER/PUBLISHER room status (one state model, web + RN) ──────────
+//
+// The render layer used to derive its own ad-hoc booleans (`connecting`, `offline`)
+// off a flattened connection string, differently in every screen. This collapses the
+// SDK's connection-state + the last disconnect bucket into ONE status enum the UI
+// renders from, so "connecting / live / reconnecting / unavailable / offline / error"
+// means the same thing everywhere.
+
+/** The flattened livekit `ConnectionState` the render layer tracks (mapState in the
+ *  RN hook / web StreamView). Kept as a plain union so this stays SDK-free. */
+export type SdkConnState =
+  | 'idle'
+  | 'connecting'
+  | 'connected'
+  | 'reconnecting'
+  | 'disconnected'
+  | 'error';
+
+/** The single status the live UI renders from. */
+export type RoomStatus =
+  | 'idle' // nothing started
+  | 'connecting' // opening signal / PC
+  | 'live' // connected, media flowing
+  | 'reconnecting' // transient interruption, SDK recovering (keep UI mounted)
+  | 'unavailable' // terminal: room gone/removed/blocked → "stream offline", offer rejoin
+  | 'offline' // disconnected (clean / transient-final) → offer rejoin
+  | 'error'; // a real connect failure surfaced (bad token, ICE, etc.)
+
+/** Derive the unified {@link RoomStatus} from the flattened connection state + the
+ *  last disconnect bucket. PURE. The connection state wins while we're actively
+ *  connecting/live/reconnecting (the disconnect bucket only matters once we're
+ *  actually `disconnected`), so a stale 'unavailable' from a prior attempt can never
+ *  bleed into a fresh connect. */
+export function deriveRoomStatus(args: {
+  conn: SdkConnState;
+  disconnectKind?: DisconnectKind | null;
+}): RoomStatus {
+  switch (args.conn) {
+    case 'connected':
+      return 'live';
+    case 'connecting':
+      return 'connecting';
+    case 'reconnecting':
+      return 'reconnecting';
+    case 'error':
+      return 'error';
+    case 'idle':
+      return 'idle';
+    case 'disconnected':
+      return args.disconnectKind === 'unavailable' ? 'unavailable' : 'offline';
+    default:
+      return 'idle';
+  }
+}
+
+/** True when the room is in a state the viewer should see a blocking status overlay
+ *  for (no live media is or will be flowing without action). The render layer shows
+ *  {@link LiveStatusOverlay}-style chrome for these. 'reconnecting' is included so a
+ *  full reconnect shows the overlay, but the underlying video/decoder stays mounted. */
+export function isBlockingStatus(status: RoomStatus): boolean {
+  return (
+    status === 'connecting' ||
+    status === 'reconnecting' ||
+    status === 'unavailable' ||
+    status === 'offline' ||
+    status === 'error'
+  );
+}
+
+/** Should the UI offer a manual "rejoin"? True for the terminal/failed states where
+ *  the SDK will NOT recover on its own (so the user needs a button), false while the
+ *  SDK is still working it (connecting/reconnecting) or already live/idle. */
+export function canRejoin(status: RoomStatus): boolean {
+  return status === 'unavailable' || status === 'offline' || status === 'error';
+}
