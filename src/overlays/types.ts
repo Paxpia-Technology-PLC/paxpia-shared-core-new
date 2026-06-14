@@ -45,6 +45,17 @@ export interface QuizPayload {
   correctOptionId?: string; // revealed when phase === 'closed'
 }
 
+/** A synced paged document (class materials: slides, worksheets). `pages` are
+ *  per-page image URLs in order (rendered client-side from a PDF, or uploaded
+ *  slide images); `page` is the page the streamer is currently showing and is
+ *  synced live — flipping it re-broadcasts the instance so every viewer follows
+ *  along. Page images live in object storage; only their URLs ride the wire. */
+export interface DocPayload {
+  title: string;
+  pages: string[];
+  page: number;
+}
+
 /** Per-user, per-overlay state that MUST persist across logout/login (e.g. "you
  *  already voted"). Keyed by (overlayId, gen) so a reset re-opens participation
  *  but a re-login within the same round still shows the user's committed choice. */
