@@ -149,6 +149,48 @@ export function entryPreloadPct(state: EntryState): number {
   return Math.min(100, Math.round((state.loadedBytes / state.totalBytes) * 100));
 }
 
+/** The MAX time (ms) the gate holds the live SURFACE after the room is connected
+ *  while waiting for the streamer's first in-room snapshot (the only manifest
+ *  source on this backend — there is no pre-join manifest endpoint). A room with an
+ *  overlay producer broadcasts `live.sync` within a frame or two of our join; a
+ *  PLAIN/seed stream has no producer and never will, so we must NOT wait forever.
+ *  After this window with no snapshot, the gate degrades to video-only (reveal the
+ *  surface; there are simply no doc/overlay slots to show). Sized to cover the
+ *  streamer's join-replay round-trip but short enough to feel instant on a plain
+ *  feed. Shared so web + RN degrade on the SAME deadline. */
+export const ENTRY_FIRST_SNAPSHOT_TIMEOUT_MS = 1500;
+
+/** THE GATE-LIFT DECISION for the in-room snapshot wait, computed by the render
+ *  layer each tick. The gate covers the live surface (a spinner shows; doc/overlay
+ *  slots are withheld so a stale page can't flash) ONLY while ALL of these hold:
+ *    • the room is not yet `connected` (still opening signaling/PC), OR
+ *    • we're connected but the first snapshot hasn't folded AND the degrade
+ *      timeout hasn't elapsed AND no video has painted yet.
+ *  The moment the room is connected AND (first snapshot folded OR video is showing
+ *  OR the timeout elapsed), the gate LIFTS. This makes a NORMAL feed (no producer,
+ *  no snapshot) reveal as soon as the video paints / the short timeout passes —
+ *  it never blocks on a snapshot that will never come — while an OVERLAY feed still
+ *  holds the slots until the real snapshot arrives (or degrades video-only on
+ *  timeout). It NEVER gates the CONNECT itself (the room connects in parallel), so
+ *  this decision can never trigger a teardown/reconnect that kills the PC.
+ *
+ *  @param connected        room.state === connected
+ *  @param firstSnapshot    the streamer's first live.sync has folded
+ *  @param hasVideo         a remote video track is present (the surface can paint)
+ *  @param msSinceConnected elapsed ms since the room reached connected (0 if not yet)
+ */
+export function shouldGateSurface(args: {
+  connected: boolean;
+  firstSnapshot: boolean;
+  hasVideo: boolean;
+  msSinceConnected: number;
+}): boolean {
+  if (!args.connected) return true; // still opening — hold (spinner over a black frame)
+  if (args.firstSnapshot) return false; // real snapshot in hand — reveal with slots
+  if (args.hasVideo) return false; // video is painting — reveal video-only immediately
+  return args.msSinceConnected < ENTRY_FIRST_SNAPSHOT_TIMEOUT_MS; // wait briefly, then degrade
+}
+
 /** A short, user-facing label for the current gate phase (web + RN render the same
  *  copy). Returns '' once past the gate. */
 export function entryStatusLabel(state: EntryState): string {

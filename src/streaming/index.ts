@@ -28,6 +28,12 @@ export * from './join';
 // The doc-viewer LOCAL TAKEOVER state machine (follow ⇄ takeover + resync, with
 // scene changes absolute / doc-source changes deferrable). Web + RN share it.
 export * from './docTakeover';
+// The CONNECTION LIFECYCLE: a cancellable connect-generation guard + the benign-
+// error classifier (incl. "PC manager is closed") so a teardown/room-switch/
+// unmount that races an in-flight connect is SWALLOWED, never surfaced. The second
+// half of the "PC manager closed" fix — pairs with join.ts (connect decision) +
+// entry.ts (manifest gate). Web + RN classify the same set of strings.
+export * from './connection';
 // PUBLIC streamer identity (username/displayName/avatar) for live-room + feed
 // tiles, and the shared CDN-snippet PREVIEW state machine (refresh/back-off/
 // in-flight). Web + RN render layers are thin shells over these.
