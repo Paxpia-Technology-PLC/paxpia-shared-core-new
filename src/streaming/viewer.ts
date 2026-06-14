@@ -176,19 +176,19 @@ export function applyOverlayChanged(state: ViewerState, overlay: OverlayInstance
 /** Apply a COMPLETE-scene snapshot (the producer's full-replace scene-sync) to the
  *  rendered overlay layer. This is the heart of P0.3: the previous scene's overlays
  *  are dropped wholesale and ONLY the new scene's set (at its per-scene rects) is
- *  rendered — monotonic by nonce so a late/duplicate packet can't regress. The
- *  bot's participation overlay (held in slots.activeOverlay) is re-folded so a scene
- *  switch keeps the running poll visible at the NEW scene's overlay rect. Pure. */
+ *  rendered — monotonic by nonce so a late/duplicate packet can't regress.
+ *
+ *  The viewer's overlay layer is now a PURE function of the latest applied snapshot:
+ *  we do NOT re-inject anything from the legacy two-slot state (slots.activeOverlay /
+ *  slots.activeDoc). The producer is the single source of truth — its RenderedScene
+ *  ALREADY carries the active participation overlay in the matching slot (see
+ *  buildRenderedScene fills on the producer). So an overlay (poll or doc) that the
+ *  new scene doesn't include simply vanishes on switch, guaranteed, with zero
+ *  remnant — no message-timing/loss can leave a stale fold behind. Pure. */
 export function applySceneSync(state: ViewerState, next: RenderedScene): ViewerState {
   const replaced = applyFullScene(state.rendered, next);
   if (replaced === state.rendered) return state; // stale snapshot → no change
-  // Re-fold the currently-active participation overlay into the fresh layer so it
-  // tracks the new scene's overlay slot (the new set was built with instance:null
-  // for overlay slots, since the bot — not the producer — owns the live instance).
-  const withOverlay = state.slots.activeOverlay
-    ? foldParticipationOverlay(replaced, state.slots.activeOverlay)
-    : replaced;
-  return { ...state, rendered: withOverlay };
+  return { ...state, rendered: replaced };
 }
 
 /** Place a participation overlay instance into the rendered layer's FIRST overlay
