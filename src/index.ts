@@ -108,6 +108,40 @@ export {
   shouldGateSurface,
   ENTRY_FIRST_SNAPSHOT_TIMEOUT_MS,
 } from './streaming/entry';
+// PRE-JOIN PREP — the room-LISTING manifest (v1) + its parser, the producer-side
+// deriveManifest, and the CLOCKLESS createEntryPrep machine (release background
+// media → settle/yield beat → preload docs → min-floor → ready). The viewer's
+// connect hangs on isPrepReady; an empty manifest skips straight to ready. Web +
+// RN share the whole machine (no DOM in core).
+export type {
+  RoomManifest,
+  RoomManifestDoc,
+  RoomManifestOverlay,
+  DeriveScene,
+  DeriveSceneItem,
+  DeriveTrackConfig,
+  PrepPhase,
+  PrepState,
+  PrepWork,
+  CreateEntryPrepOptions,
+} from './streaming/prep';
+export {
+  emptyRoomManifest,
+  parseRoomManifest,
+  manifestNeedsPrep,
+  deriveManifest,
+  roomManifestToWire,
+  createEntryPrep,
+  beginPrep,
+  prepWork,
+  onMediaReleased,
+  onSettleFloorElapsed,
+  onDocsPreloaded,
+  isPrepReady,
+  isPrepping,
+  prepStatusLabel,
+  PREP_MIN_FLOOR_MS,
+} from './streaming/prep';
 // DOC-RENDER MODEL — image/pdf/placeholder render plan + shared zoom clamp, so the
 // web + RN doc renderers pick the SAME path for the same doc (only the leaf
 // primitive differs). Gives the RN renderer a real PDF branch.

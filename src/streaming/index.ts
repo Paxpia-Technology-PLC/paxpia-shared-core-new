@@ -19,6 +19,11 @@ export * from './preload';
 // (the mobile "PC manager closed / stale PNG" fix). Distinct from viewer.ts's
 // IN-ROOM lifecycle — this gates ENTRY, before any connect.
 export * from './entry';
+// The PRE-JOIN PREP machine: a CLOCKLESS state machine driven by the room-LISTING
+// manifest (v1), run BEFORE connect — release background media → settle/yield beat
+// → preload docs → hold a min-floor → ready. deriveManifest builds the manifest the
+// producer publishes; createEntryPrep gates the viewer's connect. Web + RN share it.
+export * from './prep';
 // The DOC-RENDER MODEL: turns a synced `doc` overlay + the manifest into a render
 // PLAN (image / pdf / placeholder) so web + RN pick the SAME path; only the leaf
 // primitive (canvas vs WebView/native) differs.
