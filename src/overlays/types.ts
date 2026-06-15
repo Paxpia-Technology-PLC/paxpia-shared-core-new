@@ -54,6 +54,10 @@ export interface DocPayload {
   title: string;
   pages: string[];
   page: number;
+  /** The viewer-resolvable SOURCE url (presigned MinIO/CDN) of the doc. `pages` are
+   *  the producer's LOCAL rasterized page blobs (cross-device useless), so the
+   *  pre-join PREP manifest must carry THIS so other devices can fetch + render it. */
+  sourceUrl?: string;
 }
 
 /** Per-user, per-overlay state that MUST persist across logout/login (e.g. "you
