@@ -124,6 +124,12 @@ export type {
   PrepState,
   PrepWork,
   CreateEntryPrepOptions,
+  // DEVICE TIERING: classify a device from its (often-missing) hardware signals,
+  // then scale the prep min-floor / forced-waiting-room / connect retry policy.
+  DeviceTier,
+  DeviceSignals,
+  PrepTierParams,
+  RetryPolicy,
 } from './streaming/prep';
 export {
   emptyRoomManifest,
@@ -141,6 +147,9 @@ export {
   isPrepping,
   prepStatusLabel,
   PREP_MIN_FLOOR_MS,
+  classifyTier,
+  prepParamsForTier,
+  DEFAULT_RETRY_POLICY,
 } from './streaming/prep';
 // DOC-RENDER MODEL — image/pdf/placeholder render plan + shared zoom clamp, so the
 // web + RN doc renderers pick the SAME path for the same doc (only the leaf

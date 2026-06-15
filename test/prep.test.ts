@@ -21,6 +21,8 @@ import {
   isPrepReady,
   isPrepping,
   PREP_MIN_FLOOR_MS,
+  classifyTier,
+  prepParamsForTier,
   type RoomManifest,
   type DeriveScene,
 } from '../src/streaming/prep.ts';
@@ -207,6 +209,71 @@ function eq<T>(actual: T, expected: T, name: string): void {
   eq(prepWork(s).do, 'none', 'no docs → nothing to preload (just hold the floor)');
   s = onSettleFloorElapsed(s);
   ok(isPrepReady(s), 'media-only: floor elapsed (no docs) → ready');
+}
+
+// ── classifyTier: tolerant of MISSING signals; weak wins; high needs both ─────
+{
+  // Missing signals → conservative 'mid' (never assume fast on absent data).
+  eq(classifyTier({}), 'mid', 'both signals missing → mid (conservative default)');
+  eq(classifyTier({ memoryGB: undefined, cores: undefined }), 'mid', 'explicit undefined → mid');
+  // A garbage/non-positive signal is ignored (treated as unknown), not read as fast.
+  eq(classifyTier({ memoryGB: 0, cores: 0 }), 'mid', 'zeroed signals ignored → mid');
+  eq(classifyTier({ memoryGB: NaN, cores: NaN }), 'mid', 'NaN signals ignored → mid');
+
+  // High requires BOTH present AND strong (mem ≥ 6 && cores ≥ 6).
+  eq(classifyTier({ memoryGB: 8, cores: 8 }), 'high', 'strong mem + strong cores → high');
+  eq(classifyTier({ memoryGB: 6, cores: 6 }), 'high', 'threshold mem=6 & cores=6 → high');
+  // Only ONE strong signal known is NOT enough for high (the other is unknown).
+  eq(classifyTier({ memoryGB: 8 }), 'mid', 'strong mem, cores unknown → mid (not high)');
+  eq(classifyTier({ cores: 8 }), 'mid', 'strong cores, mem unknown → mid (not high)');
+
+  // Either KNOWN-and-weak signal forces low (weak wins over a strong sibling).
+  eq(classifyTier({ memoryGB: 2 }), 'low', 'weak mem (≤3) → low even with cores unknown');
+  eq(classifyTier({ cores: 4 }), 'low', 'weak cores (≤4) → low even with mem unknown');
+  eq(classifyTier({ memoryGB: 3, cores: 16 }), 'low', 'weak mem beats strong cores → low');
+  eq(classifyTier({ memoryGB: 16, cores: 4 }), 'low', 'weak cores beats strong mem → low');
+
+  // The mid band (between low and high) resolves to mid.
+  eq(classifyTier({ memoryGB: 4, cores: 5 }), 'mid', 'mid-band mem+cores → mid');
+
+  // prepParamsForTier mapping (the suggested knobs).
+  eq(prepParamsForTier('high'), { minFloorMs: 250, forcePrepOnEmpty: false, maxRetries: 1, backoffMs: 400 }, 'high params');
+  eq(prepParamsForTier('mid'), { minFloorMs: 900, forcePrepOnEmpty: false, maxRetries: 2, backoffMs: 700 }, 'mid params');
+  eq(prepParamsForTier('low'), { minFloorMs: 1800, forcePrepOnEmpty: true, maxRetries: 3, backoffMs: 1000 }, 'low params');
+}
+
+// ── force-prep on EMPTY: low-tier runs the waiting room even with no manifest ──
+{
+  const low = prepParamsForTier('low');
+  // An empty manifest + forcePrepOnEmpty → DOES NOT skip to ready; it runs the beat.
+  let s = createEntryPrep(emptyRoomManifest(), { minFloorMs: low.minFloorMs, forcePrepOnEmpty: true, retry: { maxRetries: low.maxRetries, backoffMs: low.backoffMs } });
+  ok(!isPrepReady(s), 'empty + forcePrepOnEmpty → NOT ready immediately (waiting room runs)');
+  eq(s.phase, 'fetchedManifest', 'empty + force → starts at fetchedManifest, not ready');
+  eq(s.minFloorMs, 1800, 'force-prep honours the tier min-floor');
+  eq(s.retry, { maxRetries: 3, backoffMs: 1000 }, 'tier retry policy carried onto PrepState');
+  ok(s.docsPreloaded, 'empty manifest has no docs → doc latch already satisfied');
+
+  // It runs release → settle → (no docs) → floor lifts → ready.
+  s = beginPrep(s);
+  eq(s.phase, 'releasingMedia', 'force-prep: beginPrep → releasingMedia (the waiting room)');
+  s = onMediaReleased(s);
+  eq(s.phase, 'settling', 'force-prep: → settling (holds the tier floor)');
+  eq(prepWork(s).do, 'none', 'force-prep on empty: no docs → just hold the floor');
+  ok(!isPrepReady(s), 'force-prep: still gated on the min-floor');
+  s = onSettleFloorElapsed(s);
+  ok(isPrepReady(s), 'force-prep: floor elapsed → ready (connect)');
+}
+
+// ── HIGH-tier empty manifest stays NEAR-INSTANT (no mandatory wait) ───────────
+{
+  const high = prepParamsForTier('high');
+  // High tier: forcePrepOnEmpty is FALSE → an empty manifest skips straight to ready
+  // with NO settle floor held (capable devices are never punished).
+  const s = createEntryPrep(emptyRoomManifest(), { minFloorMs: high.minFloorMs, forcePrepOnEmpty: high.forcePrepOnEmpty, retry: { maxRetries: high.maxRetries, backoffMs: high.backoffMs } });
+  ok(isPrepReady(s), 'high-tier empty manifest → ready immediately (near-instant)');
+  ok(!isPrepping(s), 'high-tier empty manifest → not prepping');
+  eq(prepWork(s).do, 'connect', 'high-tier empty → connect at once (no floor)');
+  eq(s.retry, { maxRetries: 1, backoffMs: 400 }, 'high-tier retry policy still carried even on the instant path');
 }
 
 // ── report ───────────────────────────────────────────────────────────────────

@@ -260,6 +260,91 @@ export type PrepPhase =
  *  to reclaim before the room connects. ~900ms feels deliberate without dragging. */
 export const PREP_MIN_FLOOR_MS = 900;
 
+// ── DEVICE TIERING — scale the prep + connect aggressiveness by capability ───────
+//
+// A join that's near-instant on a flagship can black-screen / churn decoders on a
+// weak "50-50" device (low RAM, few cores): the room allocates decoders before the
+// background feed's are reclaimed, and a first connect that drops has no retry. We
+// classify the device into a TIER from the (often-MISSING) `deviceMemory` +
+// `hardwareConcurrency` signals, then scale FOUR knobs:
+//   • minFloorMs        — how long the settle/yield beat holds (longer = more reclaim
+//                         window for weak hardware; near-zero for fast devices).
+//   • forcePrepOnEmpty  — low-tier runs the release→settle beat (the waiting room)
+//                         EVEN for an empty manifest, so a weak device still gets a
+//                         decoder-reclaim window on a plain feed. Fast devices skip it.
+//   • maxRetries        — how many times the platform connect retries a transient
+//                         failure before surfacing the Rejoin UI.
+//   • backoffMs         — the base inter-retry wait (× attempt) the connect honours.
+// PURE + clockless: the platform reads the params and performs the effects/timers.
+
+/** Device capability tier. 'mid' is the conservative default when signals are
+ *  missing — we never assume a device is fast on absent data. */
+export type DeviceTier = 'low' | 'mid' | 'high';
+
+/** The (optional) hardware signals a platform can read — both may be undefined on
+ *  browsers/engines that don't expose them (Safari hides `deviceMemory`; some
+ *  engines clamp `hardwareConcurrency`). `classifyTier` tolerates either absent. */
+export interface DeviceSignals {
+  /** navigator.deviceMemory (GiB, coarse: 0.25/0.5/1/2/4/8). Absent on Safari/FF. */
+  memoryGB?: number;
+  /** navigator.hardwareConcurrency (logical cores). Absent/clamped on some engines. */
+  cores?: number;
+}
+
+/** Classify a device into a capability tier from its (possibly missing) signals.
+ *  PURE. The rule is deliberately CONSERVATIVE under missing data:
+ *   • A signal that is undefined/NaN/≤0 is IGNORED (treated as "unknown"), never
+ *     read as fast — so a browser that hides both signals lands on the safe default.
+ *   • BOTH unknown            → 'mid' (the conservative default).
+ *   • EITHER known-and-weak   → 'low'  (memory ≤ 3 GiB  OR  cores ≤ 4).
+ *   • BOTH known-and-strong   → 'high' (memory ≥ 6 GiB AND cores ≥ 6).
+ *   • otherwise               → 'mid'.
+ *  "Weak wins" so a strong-CPU / low-RAM (or vice-versa) device is treated as low
+ *  rather than punished-as-high; "high" requires BOTH signals present AND strong. */
+export function classifyTier(signals: DeviceSignals): DeviceTier {
+  const mem = typeof signals.memoryGB === 'number' && Number.isFinite(signals.memoryGB) && signals.memoryGB > 0
+    ? signals.memoryGB
+    : undefined;
+  const cores = typeof signals.cores === 'number' && Number.isFinite(signals.cores) && signals.cores > 0
+    ? signals.cores
+    : undefined;
+  // Either KNOWN-and-weak signal forces low (weak wins over a strong sibling).
+  if ((mem !== undefined && mem <= 3) || (cores !== undefined && cores <= 4)) return 'low';
+  // High requires BOTH signals present and strong — never inferred from one alone.
+  if (mem !== undefined && cores !== undefined && mem >= 6 && cores >= 6) return 'high';
+  return 'mid';
+}
+
+/** The tier-scaled prep + connect knobs. `minFloorMs`/`forcePrepOnEmpty` feed
+ *  `createEntryPrep`; `maxRetries`/`backoffMs` are the connect retry policy the
+ *  platform connect reads (the core machine carries them through so web + RN use the
+ *  identical schedule). */
+export interface PrepTierParams {
+  /** The settle min-floor for this tier (overrides the default PREP_MIN_FLOOR_MS). */
+  minFloorMs: number;
+  /** Run the release→settle beat (the waiting room) even for an EMPTY manifest. */
+  forcePrepOnEmpty: boolean;
+  /** Max transient-failure connect retries before surfacing the Rejoin UI. */
+  maxRetries: number;
+  /** Base inter-retry wait (ms); the connect waits backoffMs × attempt. */
+  backoffMs: number;
+}
+
+/** Map a tier to its prep + connect params. Fast devices stay near-instant (small
+ *  floor, no forced prep, a single quick retry); weak devices get a real settle
+ *  window, a forced waiting room even on plain feeds, and more patient retries. */
+export function prepParamsForTier(tier: DeviceTier): PrepTierParams {
+  switch (tier) {
+    case 'high':
+      return { minFloorMs: 250, forcePrepOnEmpty: false, maxRetries: 1, backoffMs: 400 };
+    case 'low':
+      return { minFloorMs: 1800, forcePrepOnEmpty: true, maxRetries: 3, backoffMs: 1000 };
+    case 'mid':
+    default:
+      return { minFloorMs: 900, forcePrepOnEmpty: false, maxRetries: 2, backoffMs: 700 };
+  }
+}
+
 /** The work the platform must perform for the CURRENT phase, returned by `step()`
  *  / the signal handlers so the driver knows what to do next. Exactly one action
  *  is in flight at a time. */
@@ -278,6 +363,21 @@ export type PrepWork =
   /** Prep is finished — the driver may connect the room. */
   | { do: 'connect' };
 
+/** The connect RETRY POLICY the prep carries through to the platform connect.
+ *  Derived from the device tier (`prepParamsForTier`) so web + RN retry a transient
+ *  first-connect failure on the IDENTICAL schedule. Read by the connect, not the
+ *  prep machine itself (the machine never connects). */
+export interface RetryPolicy {
+  /** Max transient-failure retries before the connect surfaces the Rejoin UI. */
+  maxRetries: number;
+  /** Base inter-retry wait (ms); the connect waits backoffMs × attempt. */
+  backoffMs: number;
+}
+
+/** The default retry policy (mid-tier shape) — used when no tier params are supplied
+ *  so an un-tiered caller still gets a sane single-ish retry. */
+export const DEFAULT_RETRY_POLICY: RetryPolicy = { maxRetries: 2, backoffMs: 700 };
+
 /** The serializable prep state. A driver holds exactly this and derives its loading
  *  UI + the connect gate from it. */
 export interface PrepState {
@@ -285,6 +385,9 @@ export interface PrepState {
   manifest: RoomManifest;
   /** Min settle floor for this run (defaults to PREP_MIN_FLOOR_MS). */
   minFloorMs: number;
+  /** The connect retry policy for this run (tier-scaled). The connect reads it; the
+   *  prep machine carries it so web + RN share the schedule. */
+  retry: RetryPolicy;
   /** Completion latches the driver sets via the signal handlers. `ready` requires
    *  docs done (or skipped) AND the min-floor elapsed. */
   mediaReleased: boolean;
@@ -295,6 +398,14 @@ export interface PrepState {
 export interface CreateEntryPrepOptions {
   /** Override the min settle floor (ms). Defaults to PREP_MIN_FLOOR_MS. */
   minFloorMs?: number;
+  /** When true, an EMPTY/absent manifest STILL runs the release→settle beat (the
+   *  branded waiting room) with the min-floor instead of skipping straight to ready.
+   *  Set for LOW-tier devices so a weak device gets a decoder-reclaim window even on
+   *  a plain feed; left false for capable devices so they connect near-instantly. */
+  forcePrepOnEmpty?: boolean;
+  /** The connect retry policy (tier-scaled). Carried onto PrepState.retry for the
+   *  platform connect; defaults to DEFAULT_RETRY_POLICY. */
+  retry?: RetryPolicy;
 }
 
 /** Construct the prep machine for a manifest. An EMPTY (or absent) manifest skips
@@ -307,13 +418,19 @@ export interface CreateEntryPrepOptions {
  */
 export function createEntryPrep(manifest: RoomManifest, opts: CreateEntryPrepOptions = {}): PrepState {
   const minFloorMs = opts.minFloorMs ?? PREP_MIN_FLOOR_MS;
-  if (!manifestNeedsPrep(manifest)) {
+  const retry = opts.retry ?? DEFAULT_RETRY_POLICY;
+  // FORCE-PREP: a low-tier device runs the release→settle waiting room even on an
+  // empty manifest, so a weak device still gets a real decoder-reclaim window on a
+  // plain feed. Capable devices (forcePrepOnEmpty false) keep the empty-skip below
+  // → they connect near-instantly with NO mandatory wait.
+  if (!manifestNeedsPrep(manifest) && !opts.forcePrepOnEmpty) {
     // Empty-skip: no media to free, no docs to warm → ready immediately. All
     // latches are set so the gate is open and the driver connects at once.
     return {
       phase: 'ready',
       manifest,
       minFloorMs,
+      retry,
       mediaReleased: true,
       settleFloorElapsed: true,
       docsPreloaded: true,
@@ -323,11 +440,13 @@ export function createEntryPrep(manifest: RoomManifest, opts: CreateEntryPrepOpt
     phase: 'fetchedManifest',
     manifest,
     minFloorMs,
+    retry,
     mediaReleased: false,
     settleFloorElapsed: false,
     // No docs to warm ⇒ the doc latch is already satisfied (the driver never gets a
     // `preload` work item, so it would never call onDocsPreloaded otherwise). The
-    // gate then hangs only on the media release + the min-floor.
+    // gate then hangs only on the media release + the min-floor. An empty manifest
+    // forced into prep also has no docs → it just holds the floor (the waiting room).
     docsPreloaded: manifest.docs.length === 0,
   };
 }
