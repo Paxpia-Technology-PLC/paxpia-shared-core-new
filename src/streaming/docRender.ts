@@ -19,7 +19,7 @@
 // manifest and returns a descriptor. The leaf renderer reads `kind` and draws.
 
 import type { DocPayload, OverlayInstance } from '../overlays/types';
-import { isPdfEntry } from './preload';
+import { isPdfEntry, isEpubEntry } from './preload';
 import { manifestEntry } from './viewer';
 import type { LiveManifest } from './live';
 
@@ -30,11 +30,14 @@ import type { LiveManifest } from './live';
  *   'pdf'         — `src` is a RAW PDF url (the streamer didn't pre-rasterize for
  *                   us). The leaf renderer must rasterize: web pdf.js→canvas, RN
  *                   pdf.js-in-WebView / react-native-pdf. `page` is the page to show.
+ *   'epub'        — `src` is a RAW EPUB url. The leaf renderer opens it with an
+ *                   epub.js reader (web + RN both via a WebView). Reflowable, so
+ *                   `page`/`pageCount` are advisory (the reader owns pagination).
  *   'placeholder' — no usable source yet (a non-URL placeholder page before any
  *                   render pipeline, e.g. a same-machine dev push). Draw the
  *                   labelled card; never a video player.
  *   'empty'       — no pages at all. */
-export type DocRenderKind = 'image' | 'pdf' | 'placeholder' | 'empty';
+export type DocRenderKind = 'image' | 'pdf' | 'epub' | 'placeholder' | 'empty';
 
 /** The descriptor the leaf renderer executes. `pageCount`/`page` are resolved +
  *  clamped here so neither platform re-derives them (the web off-by-one on an
@@ -96,6 +99,9 @@ export function resolveDocRender(
 
   // 2/3. Fall back to the raw material url from the manifest.
   if (entry?.url) {
+    if (isEpubEntry(entry)) {
+      return { kind: 'epub', src: entry.url, page, pageCount, title };
+    }
     if (isPdfEntry(entry)) {
       return { kind: 'pdf', src: entry.url, page, pageCount, title };
     }

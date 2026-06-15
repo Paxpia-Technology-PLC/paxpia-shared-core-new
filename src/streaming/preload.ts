@@ -78,3 +78,10 @@ export function isRenderableMime(mime: string | undefined, filename: string | un
 export function isPdfEntry(e: Pick<ManifestEntry, 'mime' | 'filename'>): boolean {
   return (e.mime ?? '').toLowerCase() === 'application/pdf' || (e.filename ?? '').toLowerCase().endsWith('.pdf');
 }
+
+/** True if a manifest entry is an EPUB — by mime (application/epub+zip) or a .epub
+ *  filename. Mirrors isPdfEntry so the shared docRender plan can route it to the
+ *  epub leaf renderer (an epub.js-in-WebView reader on each platform). */
+export function isEpubEntry(e: Pick<ManifestEntry, 'mime' | 'filename'>): boolean {
+  return (e.mime ?? '').toLowerCase() === 'application/epub+zip' || (e.filename ?? '').toLowerCase().endsWith('.epub');
+}
