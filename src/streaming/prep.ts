@@ -143,6 +143,17 @@ export function manifestNeedsPrep(m: RoomManifest): boolean {
   return !m.empty && (m.docs.length > 0 || m.overlays.length > 0 || m.videoSources > 0);
 }
 
+/** Does this room's LISTING manifest declare a VIDEO source (a camera/screen tile)?
+ *  Drives the viewer's track-recovery `expectVideo`: a manifest with `videoSources > 0`
+ *  means a video track is expected (recover it if it drops); `videoSources === 0` is an
+ *  audio+doc-only room (the jazz docrooms) where the viewer must NEVER show a
+ *  "reconnecting video" hint. An EMPTY/absent manifest carries no signal → returns
+ *  false (we only assert video when the manifest positively says so), so the recovery
+ *  hint can't fire off a manifest that simply hasn't loaded. PURE. */
+export function manifestHasVideoSource(m: RoomManifest | null | undefined): boolean {
+  return !!m && !m.empty && m.videoSources > 0;
+}
+
 // ── deriveManifest — PRODUCER side: build the v1 manifest from the rendered scene ─
 
 /** The minimal scene shape `deriveManifest` reads: layout items typed by what they

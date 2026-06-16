@@ -308,9 +308,13 @@ export function canRejoin(status: RoomStatus): boolean {
 // recover identically and the policy is unit-testable in isolation.
 
 /** The phase of the video TRACK while the SESSION is alive.
- *   • 'ok'        — connected AND at least one remote video track present. Nothing to do.
- *   • 'recovering'— connected but NO video track: waiting for it to return / re-subscribing.
- *                   Surface a SUBTLE "reconnecting…" hint; do NOT tear down the session.
+ *   • 'ok'        — connected AND at least one remote video track present, OR connected
+ *                   to a room that has NO video source at all (an audio+doc-only room —
+ *                   the jazz docrooms — where "no video track" is the CORRECT steady
+ *                   state, not a failure). Nothing to do.
+ *   • 'recovering'— connected, the room DOES have a video source, but NO video track is
+ *                   flowing: waiting for it to return / re-subscribing. Surface a SUBTLE
+ *                   "reconnecting…" hint; do NOT tear down the session.
  *   • 'idle'      — not connected (the disconnect axis owns this); track recovery is dormant. */
 export type TrackRecoveryPhase = 'ok' | 'recovering' | 'idle';
 
@@ -354,6 +358,13 @@ export interface TrackRecoveryInput {
   connected: boolean;
   /** Does the viewer currently have at least one remote VIDEO track? */
   hasVideo: boolean;
+  /** Does the ROOM actually HAVE a video source the viewer should expect a track for?
+   *  Derived from the room manifest / synced scene (a camera/screen source is present).
+   *  When FALSE the room is audio+doc-only (the jazz docrooms) and "no video track" is
+   *  the correct steady state — track recovery must stay 'ok' and NEVER show
+   *  "reconnecting video". DEFAULTS to true when omitted, so existing callers that
+   *  always have a video source keep their behavior. */
+  expectVideo?: boolean;
   /** ms since the video track was last seen vanish while connected (0 if we have video
    *  or just lost it this tick). */
   msSinceVideoLost: number;
@@ -362,9 +373,16 @@ export interface TrackRecoveryInput {
   policy?: TrackRecoveryPolicy;
 }
 
-/** The phase the track axis is in, for the UI hint. PURE. */
-export function trackRecoveryPhase(input: Pick<TrackRecoveryInput, 'connected' | 'hasVideo'>): TrackRecoveryPhase {
+/** The phase the track axis is in, for the UI hint. PURE.
+ *  A room with NO video source (expectVideo === false) is ALWAYS 'ok' while connected:
+ *  there is no track to recover, so the viewer must never see a video-recovery hint on
+ *  an audio+doc-only room. `expectVideo` defaults to true (callers that always carry a
+ *  video source are unaffected). */
+export function trackRecoveryPhase(
+  input: Pick<TrackRecoveryInput, 'connected' | 'hasVideo'> & { expectVideo?: boolean },
+): TrackRecoveryPhase {
   if (!input.connected) return 'idle';
+  if (input.expectVideo === false) return 'ok'; // no video source → nothing to recover
   return input.hasVideo ? 'ok' : 'recovering';
 }
 
@@ -374,6 +392,9 @@ export function trackRecoveryPhase(input: Pick<TrackRecoveryInput, 'connected' |
 export function nextTrackRecoveryAction(input: TrackRecoveryInput): TrackRecoveryAction {
   // Connected + has video, or not connected at all → the track axis has nothing to do.
   if (!input.connected || input.hasVideo) return 'none';
+  // No video source in the room (audio+doc-only) → there's no track to re-subscribe; do
+  // nothing rather than spin re-subscribe nudges that can never find a video publication.
+  if (input.expectVideo === false) return 'none';
   const policy = input.policy ?? DEFAULT_TRACK_RECOVERY_POLICY;
   // Still inside the grace window: let LiveKit's own auto-resubscribe win first.
   if (input.msSinceVideoLost < policy.graceMs) return 'wait';

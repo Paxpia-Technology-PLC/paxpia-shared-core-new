@@ -177,6 +177,16 @@ export interface LiveSceneItem {
   label?: string;
 }
 
+/** Does a synced scene place at least one VIDEO source (a camera/screen tile)? The
+ *  in-room authoritative answer to "should the viewer expect a video track?" — fed to
+ *  the track-recovery `expectVideo` so an audio+doc-only scene (no camera/screen item)
+ *  never triggers the "reconnecting video" hint. A null scene carries no signal →
+ *  false (we only assert video when a scene positively places a camera/screen). PURE. */
+export function sceneHasVideoSource(scene: LiveScene | null | undefined): boolean {
+  if (!scene) return false;
+  return scene.items.some((it) => it.type === 'camera' || it.type === 'screen');
+}
+
 /** Any live-sync message a client publishes. (Only one type today; kept as a
  *  union so adding e.g. a viewer-presence ping later is non-breaking.) */
 export type LiveSyncWireMsg = LiveSyncMsg;
