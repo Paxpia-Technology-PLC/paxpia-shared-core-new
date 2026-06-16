@@ -236,6 +236,12 @@ export type {
   DisconnectKind,
   SdkConnState,
   RoomStatus,
+  // TRACK RECOVERY: the "session alive but video track vanished" axis, orthogonal
+  // to the disconnect axis. Re-subscribe the TRACK without bouncing the SESSION.
+  TrackRecoveryPhase,
+  TrackRecoveryAction,
+  TrackRecoveryPolicy,
+  TrackRecoveryInput,
 } from './streaming/connection';
 export {
   newConnectGuard,
@@ -253,6 +259,10 @@ export {
   deriveRoomStatus,
   isBlockingStatus,
   canRejoin,
+  // Track-recovery machine (video-track-lost-while-connected).
+  DEFAULT_TRACK_RECOVERY_POLICY,
+  trackRecoveryPhase,
+  nextTrackRecoveryAction,
 } from './streaming/connection';
 // Shared CDN-snippet PREVIEW state machine (single stable url, refresh cadence,
 // exponential back-off, one-load-in-flight). Web + mobile share this brain.

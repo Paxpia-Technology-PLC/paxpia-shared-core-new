@@ -287,3 +287,98 @@ export function isBlockingStatus(status: RoomStatus): boolean {
 export function canRejoin(status: RoomStatus): boolean {
   return status === 'unavailable' || status === 'offline' || status === 'error';
 }
+
+// ── TRACK RECOVERY — the "session is alive but the VIDEO TRACK vanished" machine ──
+//
+// The disconnect machine above only fires once the SESSION drops (ConnectionState →
+// Reconnecting/Disconnected). But a publisher's video track can disappear while the
+// signal + PeerConnection stay perfectly `Connected`: the SFU drops the subscription
+// under load, the publisher's encoder stalls and the track ends, or a renegotiation
+// fails to re-attach. The viewer is then STUCK past every gate — `status === 'live'`,
+// the "LIVE" badge shows, but `remoteVideos` is empty and nothing ever retries. The
+// session is fine; only the TRACK needs to come back.
+//
+// This is the SECOND recovery axis, orthogonal to the disconnect axis:
+//   • disconnect axis  → reconnect the SESSION (handled by the SDK + classifyDisconnect)
+//   • track axis (here) → re-subscribe the TRACK without touching the session
+//
+// Pure + SDK-free (mirrors classifyDisconnect): the render layer feeds it observable
+// facts (are we connected? do we have a video track? how long since it vanished? how
+// many re-subscribe nudges have we spent?) and gets back the next ACTION, so web + RN
+// recover identically and the policy is unit-testable in isolation.
+
+/** The phase of the video TRACK while the SESSION is alive.
+ *   • 'ok'        — connected AND at least one remote video track present. Nothing to do.
+ *   • 'recovering'— connected but NO video track: waiting for it to return / re-subscribing.
+ *                   Surface a SUBTLE "reconnecting…" hint; do NOT tear down the session.
+ *   • 'idle'      — not connected (the disconnect axis owns this); track recovery is dormant. */
+export type TrackRecoveryPhase = 'ok' | 'recovering' | 'idle';
+
+/** What the render layer should DO next for the track axis, decided purely from the
+ *  current facts. The hook maps each to a concrete LiveKit call (or no-op).
+ *   • 'none'        — nothing to do (we have video, or we're not connected).
+ *   • 'wait'        — video is gone but we're inside the grace window; let LiveKit
+ *                     auto-resubscribe first (it usually does). Just reflect the hint.
+ *   • 'resubscribe' — grace elapsed and still no video: explicitly re-subscribe to the
+ *                     publisher's video publication(s). Bounded by maxResubscribes.
+ *   • 'exhausted'   — spent the re-subscribe budget with no video back: stop nudging and
+ *                     let the screen surface an honest "no video" hint (session still up,
+ *                     so a SESSION reconnect / manual retry is the next lever). */
+export type TrackRecoveryAction = 'none' | 'wait' | 'resubscribe' | 'exhausted';
+
+/** Tunables for the track-recovery policy. Defaults are conservative: a short grace so
+ *  the SDK's own resubscribe wins the common case, then a few bounded nudges on a linear
+ *  cadence (the SFU/publisher recovery we're nudging is seconds-scale, not exponential). */
+export interface TrackRecoveryPolicy {
+  /** ms to WAIT for LiveKit's own auto-resubscribe before we nudge. */
+  graceMs: number;
+  /** ms between explicit re-subscribe nudges once the grace has elapsed. */
+  resubscribeIntervalMs: number;
+  /** hard cap on explicit re-subscribe nudges before we declare 'exhausted'. */
+  maxResubscribes: number;
+}
+
+export const DEFAULT_TRACK_RECOVERY_POLICY: TrackRecoveryPolicy = {
+  graceMs: 2500,
+  resubscribeIntervalMs: 3000,
+  maxResubscribes: 4,
+};
+
+/** The observable facts the track-recovery decision is made from. All come straight
+ *  from the hook's existing state (no new SDK plumbing): are we session-connected, do
+ *  we have a remote video track, how long since the track vanished, how many nudges
+ *  have we already spent. */
+export interface TrackRecoveryInput {
+  /** Is the SESSION connected (ConnectionState.Connected)? When false the disconnect
+   *  axis owns recovery and this machine is dormant ('idle'). */
+  connected: boolean;
+  /** Does the viewer currently have at least one remote VIDEO track? */
+  hasVideo: boolean;
+  /** ms since the video track was last seen vanish while connected (0 if we have video
+   *  or just lost it this tick). */
+  msSinceVideoLost: number;
+  /** How many explicit re-subscribe nudges we've ALREADY spent this outage. */
+  resubscribesSpent: number;
+  policy?: TrackRecoveryPolicy;
+}
+
+/** The phase the track axis is in, for the UI hint. PURE. */
+export function trackRecoveryPhase(input: Pick<TrackRecoveryInput, 'connected' | 'hasVideo'>): TrackRecoveryPhase {
+  if (!input.connected) return 'idle';
+  return input.hasVideo ? 'ok' : 'recovering';
+}
+
+/** Decide the next track-recovery ACTION from the current facts. PURE — same inputs →
+ *  same action on web + RN. The hook calls this on a tick while connected-without-video
+ *  and performs the returned action (re-subscribe nudge / wait / give up). */
+export function nextTrackRecoveryAction(input: TrackRecoveryInput): TrackRecoveryAction {
+  // Connected + has video, or not connected at all → the track axis has nothing to do.
+  if (!input.connected || input.hasVideo) return 'none';
+  const policy = input.policy ?? DEFAULT_TRACK_RECOVERY_POLICY;
+  // Still inside the grace window: let LiveKit's own auto-resubscribe win first.
+  if (input.msSinceVideoLost < policy.graceMs) return 'wait';
+  // Grace elapsed: nudge, up to the budget, then declare exhausted (session still up,
+  // so the screen can offer a SESSION reconnect / manual retry instead of spinning).
+  if (input.resubscribesSpent >= policy.maxResubscribes) return 'exhausted';
+  return 'resubscribe';
+}
