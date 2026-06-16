@@ -113,6 +113,71 @@ export interface LiveManifest {
   count: number;
 }
 
+/** The STABLE identity of a manifest asset for dedupe/preload caching — the URL's
+ *  ORIGIN + PATH only, with the query string (and fragment) STRIPPED.
+ *
+ *  Presigned CDN/object-storage URLs carry short-lived `?token=…&X-Amz-…` query
+ *  params that the streamer RE-GRANTS on every scene/manifest broadcast, so the
+ *  SAME underlying file arrives with a DIFFERENT full URL each time. A viewer that
+ *  keys assets on the full URL therefore treats every re-grant as a BRAND-NEW asset
+ *  → it re-preloads + the doc/image overlay reloads in a loop (the reported
+ *  doc/audio boot-loop). Keying on the path (the object key) is stable across
+ *  re-grants, so a re-broadcast of the same material is recognized as already-warm.
+ *
+ *  PURE + DOM-free (manual scheme/host/path split, no URL ctor — runs on Hermes).
+ *  Falls back to the trimmed raw string when there's no `?` to strip. */
+export function manifestAssetKey(url: string | undefined | null): string {
+  if (!url) return '';
+  const raw = String(url).trim();
+  if (raw === '') return '';
+  // Drop the fragment first, then the query string — the object key is everything
+  // before the first '?' (and before any '#'). We intentionally keep scheme+host+
+  // path so two different buckets/paths never collide.
+  const noFrag = raw.split('#', 1)[0];
+  const noQuery = noFrag.split('?', 1)[0];
+  return noQuery;
+}
+
+/** Dedupe manifest entries by their query-stripped asset key, keeping the FIRST
+ *  occurrence of each path (so a re-granted duplicate of an already-listed file is
+ *  dropped). Entries with the same `id` are also collapsed (a re-broadcast of the
+ *  same material id). Entries with NO url are keyed by id so they aren't lost.
+ *  PURE — returns a new array; preserves order. This is what lets the viewer's
+ *  preload + first-render dedupe a manifest whose presigned urls changed query
+ *  params on a re-grant, killing the reload loop. */
+export function dedupeManifestEntries(entries: ManifestEntry[]): ManifestEntry[] {
+  const seenPaths = new Set<string>();
+  const seenIds = new Set<string>();
+  const out: ManifestEntry[] = [];
+  for (const e of entries) {
+    // Collapse a re-broadcast of the same material id outright.
+    if (seenIds.has(e.id)) continue;
+    // Collapse a re-granted duplicate of the same file (same path, new query).
+    const path = e.url ? manifestAssetKey(e.url) : '';
+    if (path && seenPaths.has(path)) continue;
+    if (path) seenPaths.add(path);
+    seenIds.add(e.id);
+    out.push(e);
+  }
+  return out;
+}
+
+/** A manifest with its entries deduped by query-stripped asset key (see
+ *  `dedupeManifestEntries`). `count` + `totalSizeBytes` are recomputed off the
+ *  deduped set so the preload progress denominator matches what's actually warmed.
+ *  Returns the SAME instance when nothing was a duplicate (stable identity for
+ *  React deps). Null/undefined passes through unchanged. PURE. */
+export function dedupeManifest(m: LiveManifest | null | undefined): LiveManifest | null {
+  if (!m) return m ?? null;
+  const entries = dedupeManifestEntries(m.entries);
+  if (entries.length === m.entries.length) return m; // nothing dropped → same ref
+  return {
+    entries,
+    count: entries.length,
+    totalSizeBytes: entries.reduce((sum, e) => sum + (e.sizeBytes || 0), 0),
+  };
+}
+
 /** The PRESENTER's transform on the active doc — the page (already synced via the
  *  doc instance) PLUS the pan/zoom the streamer is showing, so a joiner lands on
  *  EXACTLY the streamer's view (then may locally adjust). Normalized so it's
