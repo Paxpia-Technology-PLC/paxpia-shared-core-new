@@ -88,6 +88,7 @@ export {
   materialsToPreload,
   isRenderableMime,
   isPdfEntry,
+  isEpubEntry,
 } from './streaming/preload';
 // VIEWER-ENTRY GATE — the ordered fetch-manifest → preload → THEN-connect machine
 // the room connection hangs on (kills the manifest-vs-room race that black-screened

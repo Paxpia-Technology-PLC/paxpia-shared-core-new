@@ -63,15 +63,18 @@ export function materialsToPreload(manifest: LiveManifest | null, cache: Preload
   return manifest.entries.filter((e) => !cache.has(e.id) && isRenderableMime(e.mime, e.filename));
 }
 
-/** True for a MIME/filename we can show live as a synced doc (image or PDF). The
- *  same predicate the materials API uses, kept here so the preload planner doesn't
- *  depend on the web data layer. */
+/** True for a MIME/filename we can show live as a synced doc (image, PDF, or
+ *  EPUB). The same predicate the materials API uses, kept here so the preload
+ *  planner doesn't depend on the web data layer. EPUB is renderable now that both
+ *  platforms have an epub.js reader leaf (resolveDocRender → 'epub'); without it an
+ *  EPUB material was silently dropped from materialsToPreload + the manifest. */
 export function isRenderableMime(mime: string | undefined, filename: string | undefined): boolean {
   const m = (mime ?? '').toLowerCase();
   if (m.startsWith('image/')) return true;
   if (m === 'application/pdf') return true;
+  if (m === 'application/epub+zip') return true;
   const f = (filename ?? '').toLowerCase();
-  return f.endsWith('.pdf') || /\.(png|jpe?g|gif|webp|bmp|svg)$/.test(f);
+  return f.endsWith('.pdf') || f.endsWith('.epub') || /\.(png|jpe?g|gif|webp|bmp|svg)$/.test(f);
 }
 
 /** True if a manifest entry is a PDF (drives the render-path branch). */
