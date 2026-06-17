@@ -390,6 +390,9 @@ export type {
 export type { GateMachine, GateEvent } from './streaming/gate';
 export {
   deriveExpectVideo,
+  deriveRoomExpectVideo,
+  manifestIsAudioOnly,
+  roomHasMaterials,
   buildGateSteps,
   initialGateState,
   gateTransition,

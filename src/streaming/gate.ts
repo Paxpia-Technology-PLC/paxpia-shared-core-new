@@ -188,7 +188,15 @@ export interface GateAdapter {
  *  either positively placing a camera/screen source means "expect video". When
  *  BOTH are video-less the room is audio-only (the jazz docrooms) and the gate must
  *  NOT add the video readiness wait. THE video-less boot-loop fix lives here +
- *  `buildGateSteps`. PURE. */
+ *  `buildGateSteps`. PURE.
+ *
+ *  ⚠️ This reads the DOC-MANIFEST's video sources only. A NORMAL camera feed carries
+ *  NO doc manifest (it resolves to the empty manifest) → this returns false, which is
+ *  WRONG for the SURFACE decision (a plain feed IS a video stream). Use this ONLY for
+ *  the track-RECOVERY hint (a manifest that says `videoSources===0` positively means
+ *  "never show reconnecting-video"). For the surface / gate "expect a video track"
+ *  decision use `deriveRoomExpectVideo`, which treats an ABSENT manifest as a normal
+ *  video feed. */
 export function deriveExpectVideo(
   manifest: RoomManifest | null | undefined,
   scene: LiveScene | null | undefined,
@@ -196,8 +204,53 @@ export function deriveExpectVideo(
   return manifestHasVideoSource(manifest) || sceneHasVideoSource(scene);
 }
 
-/** The ordered VISIBLE step ids (render in the loading shell, green-✓). */
-const VISIBLE_STEP_IDS: readonly GateStepId[] = ['join-room', 'download'];
+/** Does a room genuinely have NO video publisher — i.e. is it a TRUE audio-only doc
+ *  room (jazz/audio docroom)? This is the POSITIVE audio-only signal: the manifest is
+ *  RESOLVED (not undefined/loading), is NON-EMPTY (positively describes a scene), and
+ *  declares zero video sources. An empty/absent/loading manifest is NOT audio-only —
+ *  it's a plain feed whose video track we DO expect. PURE. */
+export function manifestIsAudioOnly(m: RoomManifest | null | undefined): boolean {
+  return !!m && !m.empty && m.videoSources === 0;
+}
+
+/** THE SURFACE/GATE "expect a video track?" decision (BUG 1 fix). Unlike
+ *  `deriveExpectVideo` (which reads the doc-manifest's video sources and so reports
+ *  false for a manifest-less normal feed), this reflects whether the ROOM has/expects
+ *  a real video track:
+ *    • a RESOLVED, NON-EMPTY manifest that declares `videoSources===0` (and an
+ *      in-room scene with no video) ⇒ a genuine audio-only doc room ⇒ FALSE.
+ *    • ANYTHING ELSE — an absent/loading/empty manifest (a plain camera feed has no
+ *      doc manifest), or any positive video source on the manifest OR the synced
+ *      scene ⇒ TRUE (expect/render the LiveKit video track).
+ *  So a manifest-less normal feed = a regular video stream (`expectVideo=true`,
+ *  render the video track); only a genuinely audio-only room (audio source + zero
+ *  video publisher) → the audio surface. PURE. */
+export function deriveRoomExpectVideo(
+  manifest: RoomManifest | null | undefined,
+  scene: LiveScene | null | undefined,
+): boolean {
+  // A positive video source on EITHER the manifest or the synced scene ⇒ expect video.
+  if (manifestHasVideoSource(manifest) || sceneHasVideoSource(scene)) return true;
+  // No positive video source anywhere. Only treat as audio-only when the manifest
+  // POSITIVELY says so (resolved + non-empty + zero video). An absent/empty/loading
+  // manifest is a plain video feed → still expect video.
+  if (manifestIsAudioOnly(manifest)) return false;
+  return true;
+}
+
+/** Does this room have any MATERIALS to download (docs in the listing manifest)?
+ *  Drives whether the gate shows the visible `download` step: a manifest-less /
+ *  empty-manifest feed has nothing to download (BUG 2 — no empty "downloading
+ *  materials" checklist on a plain feed). PURE. */
+export function roomHasMaterials(m: RoomManifest | null | undefined): boolean {
+  return !!m && !m.empty && m.docs.length > 0;
+}
+
+/** The ordered VISIBLE step ids (render in the loading shell, green-✓). `download` is
+ *  CONDITIONAL — included only when the room has materials (see `buildGateSteps`); a
+ *  manifest-less / empty feed shows just `join-room` (BUG 2). */
+const VISIBLE_STEP_IDS_WITH_DOWNLOAD: readonly GateStepId[] = ['join-room', 'download'];
+const VISIBLE_STEP_IDS_NO_DOWNLOAD: readonly GateStepId[] = ['join-room'];
 
 /** The ordered HIDDEN step ids that gate `canHandOff` but don't clutter the UI.
  *  `subscribe-tracks` waits on audio (and, when `expectVideo`, also video — see
@@ -225,13 +278,15 @@ const STEP_LABELS: Record<GateStepId, string> = {
   'first-snapshot': 'Syncing stream',
 };
 
-/** Build the gate's step list for a room. The set is FIXED (visible: join-room,
- *  download; hidden: reclaim-decoders, subscribe-tracks, mute-applied,
- *  manifest-ready, first-snapshot) — `expectVideo` does NOT add/remove a step here;
+/** Build the gate's step list for a room. The HIDDEN set is fixed (reclaim-decoders,
+ *  subscribe-tracks, mute-applied, manifest-ready, first-snapshot). The VISIBLE set is
+ *  `join-room` plus — ONLY when `hasMaterials` — `download` (BUG 2: a manifest-less /
+ *  empty feed has nothing to download, so the gate OMITS the `download` step and the
+ *  checklist shows just "Joining room"). `expectVideo` does NOT add/remove a step here;
  *  it changes ONLY what `subscribe-tracks` waits on (audio vs audio+video), so an
- *  audio-only room can never block on a video track that will never arrive. All
- *  steps start `pending`. PURE. */
-export function buildGateSteps(): GateStep[] {
+ *  audio-only room can never block on a video track that will never arrive. All steps
+ *  start `pending`. PURE. */
+export function buildGateSteps(hasMaterials: boolean = true): GateStep[] {
   const mk = (id: GateStepId, visible: boolean): GateStep => ({
     id,
     label: STEP_LABELS[id],
@@ -239,8 +294,9 @@ export function buildGateSteps(): GateStep[] {
     status: 'pending',
     ...(id === 'download' ? { progress: 0 } : {}),
   });
+  const visibleIds = hasMaterials ? VISIBLE_STEP_IDS_WITH_DOWNLOAD : VISIBLE_STEP_IDS_NO_DOWNLOAD;
   return [
-    ...VISIBLE_STEP_IDS.map((id) => mk(id, true)),
+    ...visibleIds.map((id) => mk(id, true)),
     ...HIDDEN_STEP_IDS.map((id) => mk(id, false)),
   ];
 }
@@ -254,11 +310,13 @@ export interface GateMachine extends GateState {
 }
 
 /** Construct the initial gate machine. `expectVideo` selects the audio-only branch
- *  (derive it via `deriveExpectVideo`). Phase starts `prepping` (the pre-connect
+ *  (derive it via `deriveRoomExpectVideo`). `hasMaterials` (default true) selects
+ *  whether the VISIBLE checklist includes the `download` step — false for a
+ *  manifest-less / empty feed (BUG 2). Phase starts `prepping` (the pre-connect
  *  release/settle/preload beat runs before the visible `join-room` step opens). */
-export function initialGateState(expectVideo: boolean): GateMachine {
+export function initialGateState(expectVideo: boolean, hasMaterials: boolean = true): GateMachine {
   return {
-    steps: buildGateSteps(),
+    steps: buildGateSteps(hasMaterials),
     phase: 'prepping',
     canHandOff: false,
     expectVideo,
@@ -394,13 +452,17 @@ export function gateTransition(m: GateMachine, ev: GateEvent): GateMachine {
   }
 }
 
-/** Convenience: derive `expectVideo` from a room's signals + build the initial
- *  machine in one call. */
+/** Convenience: derive `expectVideo` (the SURFACE/gate decision — a manifest-less
+ *  normal feed expects video; only a genuinely audio-only doc room does not) + whether
+ *  the room has materials (BUG 2), then build the initial machine in one call. */
 export function createGate(args: {
   manifest?: RoomManifest | null;
   scene?: LiveScene | null;
 }): GateMachine {
-  return initialGateState(deriveExpectVideo(args.manifest, args.scene));
+  return initialGateState(
+    deriveRoomExpectVideo(args.manifest, args.scene),
+    roomHasMaterials(args.manifest),
+  );
 }
 
 /** The single hand-off predicate the driver reads — true ONLY when every step
