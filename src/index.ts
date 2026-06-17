@@ -95,6 +95,9 @@ export {
   isRenderableMime,
   isPdfEntry,
   isEpubEntry,
+  // WEBP/IMAGE classification: any image/* mime or image extension (incl. .webp) →
+  // the image leaf, so a webp can NEVER fall through to the failing pdf.js leaf.
+  isImageEntry,
 } from './streaming/preload';
 // VIEWER-ENTRY GATE — the ordered fetch-manifest → preload → THEN-connect machine
 // the room connection hangs on (kills the manifest-vs-room race that black-screened
@@ -141,6 +144,10 @@ export type {
 export {
   emptyRoomManifest,
   parseRoomManifest,
+  // Format-aware doc-kind resolver: a literal image/epub/pdf kind wins, anything
+  // ambiguous (missing, or a raw mime like 'image/webp') is sniffed from mime+url so
+  // an image (incl. webp) is classified 'image' and never defaulted to 'pdf'.
+  normalizeDocKind,
   manifestNeedsPrep,
   manifestHasVideoSource,
   deriveManifest,

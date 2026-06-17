@@ -19,7 +19,7 @@
 // manifest and returns a descriptor. The leaf renderer reads `kind` and draws.
 
 import type { DocPayload, OverlayInstance } from '../overlays/types';
-import { isPdfEntry, isEpubEntry } from './preload';
+import { isPdfEntry, isEpubEntry, isImageEntry } from './preload';
 import { manifestEntry } from './viewer';
 import type { LiveManifest } from './live';
 
@@ -97,15 +97,24 @@ export function resolveDocRender(
     return { kind: 'image', src: pageSrc, page, pageCount, title };
   }
 
-  // 2/3. Fall back to the raw material url from the manifest.
+  // 2/3. Fall back to the raw material url from the manifest. Order is
+  // EPUB → PDF → IMAGE, and IMAGE is now matched EXPLICITLY (isImageEntry: any
+  // image/* mime or image extension incl. .webp) BEFORE the catch-all so a webp can
+  // never be mistaken for a PDF and routed to the pdf.js leaf (which fails → the
+  // previous doc lingers). The final `image` fallback stays for an url with no mime
+  // and no extension (a presigned image whose type we can't sniff but still IS the
+  // page) — better a direct <Image> attempt than the PDF leaf.
   if (entry?.url) {
     if (isEpubEntry(entry)) {
       return { kind: 'epub', src: entry.url, page, pageCount, title };
     }
+    if (isImageEntry(entry)) {
+      return { kind: 'image', src: entry.url, page, pageCount, title };
+    }
     if (isPdfEntry(entry)) {
       return { kind: 'pdf', src: entry.url, page, pageCount, title };
     }
-    // An image material whose page images we never got: the raw url IS the page.
+    // No mime/extension we recognize: treat the raw url as the image page.
     return { kind: 'image', src: entry.url, page, pageCount, title };
   }
 
@@ -119,6 +128,11 @@ export function resolveDocRender(
     const hint = { mime: payload.sourceMime ?? '', filename: src };
     if (isEpubEntry(hint)) {
       return { kind: 'epub', src, page, pageCount, title };
+    }
+    // IMAGE matched explicitly (incl. image/webp + .webp urls) before PDF so a webp
+    // preview never routes to the pdf.js leaf and strands the prior doc on screen.
+    if (isImageEntry(hint)) {
+      return { kind: 'image', src, page, pageCount, title };
     }
     if (isPdfEntry(hint)) {
       return { kind: 'pdf', src, page, pageCount, title };

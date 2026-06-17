@@ -46,6 +46,30 @@ export interface RoomManifestDoc {
   pages?: number;
 }
 
+/** Resolve a doc's render kind. A literal 'image'/'epub'/'pdf' kind is honored
+ *  verbatim; ANYTHING ELSE (a missing kind, or a raw mime/format string like
+ *  'image/webp') is sniffed from the mime + url so an IMAGE — including webp — is
+ *  classified 'image' and NEVER defaulted to 'pdf'. Defaulting an image to 'pdf'
+ *  routed it to the pdf.js-in-WebView leaf, which fails to render an image and left
+ *  the PREVIOUS doc mounted (the reported "webp doesn't render — overlay stays on the
+ *  previous doc"). Kept self-contained (no import) so prep.ts stays dependency-free;
+ *  the predicate set mirrors preload.ts's isImageEntry/isEpubEntry/isPdfEntry. PURE. */
+export function normalizeDocKind(
+  rawKind: unknown,
+  mime?: string,
+  url?: string,
+): 'pdf' | 'image' | 'epub' {
+  if (rawKind === 'image' || rawKind === 'epub' || rawKind === 'pdf') return rawKind;
+  const m = (mime ?? '').toLowerCase();
+  const u = (url ?? '').toLowerCase();
+  if (m === 'application/epub+zip' || /\.epub(\?|#|$)/.test(u)) return 'epub';
+  if (m.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|svg|avif|heic|heif)(\?|#|$)/.test(u)) return 'image';
+  if (m === 'application/pdf' || /\.pdf(\?|#|$)/.test(u)) return 'pdf';
+  // Unknown mime + extensionless url: an image is the safest default to ATTEMPT (a
+  // direct <Image>), since the failing path we're avoiding is mislabeling → pdf.
+  return 'image';
+}
+
 /** An overlay the room is currently showing (type + id), so the viewer can warm
  *  the overlay renderer ahead of connect. Carried verbatim from the listing. */
 export interface RoomManifestOverlay {
@@ -115,8 +139,12 @@ export function parseRoomManifest(raw: unknown): RoomManifest {
     const dx = x as Record<string, unknown>;
     const id = typeof dx.id === 'string' ? dx.id : '';
     if (!id) continue;
-    const kind = dx.kind === 'image' ? 'image' : dx.kind === 'epub' ? 'epub' : 'pdf';
     const url = typeof dx.url === 'string' ? dx.url : undefined;
+    // Classify the doc kind. The literal 'image'/'epub'/'pdf' kind wins; but a kind
+    // that's MISSING or a raw mime/format string is resolved by sniffing the mime +
+    // url so an IMAGE (incl. webp) is never defaulted to 'pdf' and routed to the
+    // failing pdf.js leaf (which left the previous doc mounted — the reported webp bug).
+    const kind = normalizeDocKind(dx.kind, (typeof dx.mime === 'string' ? dx.mime : undefined), url);
     const pages = dx.pages != null ? asInt(dx.pages) : undefined;
     docs.push({ id, kind, url, ...(pages != null ? { pages } : {}) });
   }
@@ -204,7 +232,9 @@ export function deriveManifest(scene: DeriveScene | null, track: DeriveTrackConf
     } else if (it.type === 'doc' && it.instanceId) {
       docs.push({
         id: it.instanceId,
-        kind: it.docKind === 'image' ? 'image' : it.docKind === 'epub' ? 'epub' : 'pdf',
+        // Format-aware (see normalizeDocKind): a webp doc whose docKind is ambiguous
+        // is classified 'image' off its url/mime instead of defaulting to 'pdf'.
+        kind: normalizeDocKind(it.docKind, undefined, it.docUrl),
         ...(it.docUrl ? { url: it.docUrl } : {}),
         ...(it.docPages != null ? { pages: it.docPages } : {}),
       });

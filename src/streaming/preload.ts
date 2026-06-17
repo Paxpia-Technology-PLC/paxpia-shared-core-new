@@ -88,3 +88,22 @@ export function isPdfEntry(e: Pick<ManifestEntry, 'mime' | 'filename'>): boolean
 export function isEpubEntry(e: Pick<ManifestEntry, 'mime' | 'filename'>): boolean {
   return (e.mime ?? '').toLowerCase() === 'application/epub+zip' || (e.filename ?? '').toLowerCase().endsWith('.epub');
 }
+
+/** True if a manifest entry is a directly-displayable IMAGE — by an `image/*` mime
+ *  (covers image/webp, image/png, image/jpeg, image/gif, …) OR a recognized image
+ *  filename extension. This is what classifies WEBP (and every other image format)
+ *  as the IMAGE leaf so it can NEVER fall through to the PDF leaf.
+ *
+ *  WHY: the doc-kind classifiers in prep.ts (parse/deriveManifest) historically
+ *  collapsed to `pdf` for anything not the literal string `'image'`. A webp tagged
+ *  by its raw mime (`image/webp`) or carried only as a `.webp` url would then be
+ *  mislabeled `pdf`, routed to the pdf.js-in-WebView leaf, fail to render, and leave
+ *  the PREVIOUSLY-mounted doc on screen (the reported "webp doesn't render — overlay
+ *  stays on the previous doc"). Making image classification explicit + format-aware
+ *  closes that — an image is an image regardless of which image codec it uses. */
+export function isImageEntry(e: Pick<ManifestEntry, 'mime' | 'filename'>): boolean {
+  const m = (e.mime ?? '').toLowerCase();
+  if (m.startsWith('image/')) return true;
+  const f = (e.filename ?? '').toLowerCase();
+  return /\.(png|jpe?g|gif|webp|bmp|svg|avif|heic|heif)(\?|#|$)/.test(f);
+}
