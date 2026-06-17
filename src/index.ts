@@ -31,6 +31,7 @@ export type {
   ManifestEntry,
   LiveManifest,
   DocPresenterState,
+  DocViewMode,
 } from './streaming/live';
 export {
   LIVESYNC_WIRE_VERSION,
@@ -52,7 +53,19 @@ export {
   manifestAssetKey,
   dedupeManifestEntries,
   dedupeManifest,
+  // Doc view-mode back-compat readers (an old presenter struct → 'single' / 0).
+  docViewModeOf,
+  docScrollPosOf,
 } from './streaming/live';
+// DOC SCROLL — whole-doc "scroll" view-mode math (page culling, derived page,
+// position clamp). Sibling of docViewport (single-page pan/zoom).
+export {
+  cullWindow,
+  pageAtScroll,
+  clampScrollPos,
+  DOC_OVERSCAN_DESKTOP,
+  DOC_OVERSCAN_MOBILE,
+} from './streaming/docScroll';
 // FULL-REPLACE scene-overlay model + scene-sync wire — a scene switch ships the
 // COMPLETE overlay set (per-scene rects + payloads) and the viewer replaces its
 // whole overlay layer (idempotent, monotonic by nonce → no remnants, no centered

@@ -178,19 +178,49 @@ export function dedupeManifest(m: LiveManifest | null | undefined): LiveManifest
   };
 }
 
+/** How a doc is laid out: a single server-synced page (prev/next) vs the whole
+ *  document as one continuous scroll. Lives in the synced presenter state so a
+ *  streamer's mode mirrors to every viewer (web + mobile share the SAME control). */
+export type DocViewMode = 'single' | 'scroll';
+
 /** The PRESENTER's transform on the active doc — the page (already synced via the
  *  doc instance) PLUS the pan/zoom the streamer is showing, so a joiner lands on
  *  EXACTLY the streamer's view (then may locally adjust). Normalized so it's
  *  resolution-independent: `zoom` is a scale ≥1; `panX`/`panY` are the translation
- *  in CSS px at zoom (mirrors the renderer's offset). */
+ *  in CSS px at zoom (mirrors the renderer's offset).
+ *
+ *  BACKWARD COMPATIBLE: `mode`/`scrollPos` are OPTIONAL — an old presenter struct
+ *  (no mode field) reads as `mode:'single', scrollPos:0` via `docViewModeOf` /
+ *  `docScrollPosOf` below, so a V1 streamer still drives a V2 viewer. */
 export interface DocPresenterState {
-  /** Synced page index (redundant with doc.payload.page; carried for clarity). */
+  /** Synced page index (redundant with doc.payload.page; carried for clarity).
+   *  In scroll mode this is DERIVED from scrollPos (the page at the viewport top). */
   page: number;
   /** Zoom scale (1 = fit). */
   zoom: number;
   /** Pan offset in px (renderer's translate(x,y)). */
   panX: number;
   panY: number;
+  /** The active view mode — the streamer's single/scroll toggle, mirrored to viewers.
+   *  Optional for wire back-compat (absent ⇒ 'single'). */
+  mode?: DocViewMode;
+  /** Scroll-mode position as a NORMALIZED "pages-as-float" coordinate (e.g. 4.5 =
+   *  halfway down page index 4). Resolution-independent so a 1080p streamer and a
+   *  720p phone land on the same logical position. Absent ⇒ 0. */
+  scrollPos?: number;
+}
+
+/** Read the view mode off a (possibly V1) presenter struct, defaulting to 'single'.
+ *  The single place the back-compat default lives so web + mobile agree. */
+export function docViewModeOf(p: DocPresenterState | null | undefined): DocViewMode {
+  return p?.mode === 'scroll' ? 'scroll' : 'single';
+}
+
+/** Read the normalized scroll position off a (possibly V1) presenter struct (0 when
+ *  absent / not in scroll mode). */
+export function docScrollPosOf(p: DocPresenterState | null | undefined): number {
+  const v = p?.scrollPos;
+  return typeof v === 'number' && Number.isFinite(v) ? v : 0;
 }
 
 /** Broadcast the full doc-slot + selected-scene snapshot. The streamer sends this
