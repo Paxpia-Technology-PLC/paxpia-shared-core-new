@@ -47,6 +47,11 @@ export {
   assignScene,
   unassignScene,
   initialSceneId,
+  // Manifest dedupe by query-stripped asset key — recognizes a re-granted presigned
+  // URL as the SAME asset (kills the doc/audio re-grant reload loop on mobile).
+  manifestAssetKey,
+  dedupeManifestEntries,
+  dedupeManifest,
 } from './streaming/live';
 // FULL-REPLACE scene-overlay model + scene-sync wire — a scene switch ships the
 // COMPLETE overlay set (per-scene rects + payloads) and the viewer replaces its
