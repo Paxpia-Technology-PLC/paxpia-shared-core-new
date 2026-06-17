@@ -37,8 +37,9 @@
  *  doc entries (id + render kind + URL + optional page count). */
 export interface RoomManifestDoc {
   id: string;
-  /** 'pdf' rasterizes per-page; 'image' is a single page. */
-  kind: 'pdf' | 'image';
+  /** 'pdf' rasterizes per-page; 'image' is a single page; 'epub' is a reflowable
+   *  book the epub.js reader leaf opens from `url` (no per-page warming). */
+  kind: 'pdf' | 'image' | 'epub';
   /** The fetch/preload URL (presigned or public). Absent ⇒ nothing to warm. */
   url?: string;
   /** PDF page count when known (drives a render estimate); absent for images. */
@@ -114,7 +115,7 @@ export function parseRoomManifest(raw: unknown): RoomManifest {
     const dx = x as Record<string, unknown>;
     const id = typeof dx.id === 'string' ? dx.id : '';
     if (!id) continue;
-    const kind = dx.kind === 'image' ? 'image' : 'pdf';
+    const kind = dx.kind === 'image' ? 'image' : dx.kind === 'epub' ? 'epub' : 'pdf';
     const url = typeof dx.url === 'string' ? dx.url : undefined;
     const pages = dx.pages != null ? asInt(dx.pages) : undefined;
     docs.push({ id, kind, url, ...(pages != null ? { pages } : {}) });
@@ -166,7 +167,7 @@ export interface DeriveSceneItem {
   instanceId?: string;
   /** For a doc slot: its preload URL + kind/pages, when a doc is live in it. */
   docUrl?: string;
-  docKind?: 'pdf' | 'image';
+  docKind?: 'pdf' | 'image' | 'epub';
   docPages?: number;
   /** For an overlay slot: the overlay kind (poll/quiz/vote-button/…) when filled. */
   overlayType?: string;
@@ -203,7 +204,7 @@ export function deriveManifest(scene: DeriveScene | null, track: DeriveTrackConf
     } else if (it.type === 'doc' && it.instanceId) {
       docs.push({
         id: it.instanceId,
-        kind: it.docKind === 'image' ? 'image' : 'pdf',
+        kind: it.docKind === 'image' ? 'image' : it.docKind === 'epub' ? 'epub' : 'pdf',
         ...(it.docUrl ? { url: it.docUrl } : {}),
         ...(it.docPages != null ? { pages: it.docPages } : {}),
       });
