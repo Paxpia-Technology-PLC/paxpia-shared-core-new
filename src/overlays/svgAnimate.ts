@@ -294,6 +294,30 @@ export function hasSmilAnimation(svg: string): boolean {
   return /<animate(transform|motion)?\b/i.test(svg) || /<set\b/i.test(svg);
 }
 
+/** COLOR-PARITY (mobile over-saturation fix) — react-native-svg's <SvgXml> renders
+ *  neither CSS `mix-blend-mode` nor SVG `color-interpolation-filters="linearRGB"` (the
+ *  SVG default the browser uses inside <filter>). The art overlays lean on BOTH: high
+ *  Hours add `.blend{mix-blend-mode:screen}` so overlapping translucent layers LIGHTEN
+ *  toward white on web, and feGaussianBlur/feColorMatrix composite in linearRGB. With
+ *  those ignored, mobile stacks every fill as plain source-over alpha in sRGB, so the
+ *  same document paints visibly MORE saturated / denser than web.
+ *
+ *  We can't make react-native-svg honour those, so we approximate web's softer composite
+ *  by computing a single parity OPACITY the host applies to the whole overlay: when the
+ *  document uses screen-blend (or many stacked translucent layers), a screen blend's
+ *  result is always lighter/less-saturated than source-over, which at the macro level
+ *  reads like a reduced overall opacity. Returns 1 (no change) for documents that don't
+ *  use blend modes, so a plain card is untouched. PURE + Hermes-safe (regex, no DOM). */
+export function svgSaturationParityOpacity(svg: string): number {
+  // `mix-blend-mode:screen|lighten|color-dodge` — the lightening blends web applies that
+  // react-native-svg drops. Their visual effect vs source-over is a softer, lighter
+  // composite; ~0.82 brings the mobile stack into line with web without washing it out.
+  if (/mix-blend-mode\s*:\s*(screen|lighten|color-dodge|plus-lighter|hard-light)/i.test(svg)) {
+    return 0.82;
+  }
+  return 1;
+}
+
 /** Extract the remote raster URLs referenced by an SVG's `<image href>` /
  *  `<image xlink:href>` elements, so the platform can PREFETCH them before the SVG
  *  paints (the fix for "image overlay shown without the image"). Only http(s)/data

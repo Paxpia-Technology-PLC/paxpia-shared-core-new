@@ -4,6 +4,7 @@ export * from './wire';
 export * from './svg';
 export * from './svgSanitize';
 export * from './svgAnimate';
+export * from './svgClock';
 export * from './consume';
 export * from './target';
 export * from './previewCompat';
