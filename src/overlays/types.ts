@@ -58,6 +58,13 @@ export interface DocPayload {
    *  the producer's LOCAL rasterized page blobs (cross-device useless), so the
    *  pre-join PREP manifest must carry THIS so other devices can fetch + render it. */
   sourceUrl?: string;
+  /** The source file's MIME (e.g. application/epub+zip, application/pdf). Set when a
+   *  doc is built WITHOUT a live manifest — the studio PREVIEW path, where there's no
+   *  room manifest to read the kind from. Lets resolveDocRender pick the epub/pdf/
+   *  image leaf off `sourceUrl` alone. EPUB especially needs it: it ships with EMPTY
+   *  pages[] (reflowable, never rasterized), so with no manifest AND no mime hint the
+   *  plan would fall to 'empty'. Live rooms still derive the kind from the manifest. */
+  sourceMime?: string;
 }
 
 /** Per-user, per-overlay state that MUST persist across logout/login (e.g. "you

@@ -109,6 +109,23 @@ export function resolveDocRender(
     return { kind: 'image', src: entry.url, page, pageCount, title };
   }
 
+  // 2b. NO manifest (the studio PREVIEW path), but the payload carries its own
+  // sourceUrl + sourceMime. Same branch as 2/3 but off the payload, so a previewed
+  // EPUB (empty pages[], no room manifest) still routes to the epub.js reader instead
+  // of falling through to 'empty'. PDF/image previews keep working off pages[] above;
+  // this matters for the page-less EPUB case.
+  if (isDisplayableUrl(payload.sourceUrl)) {
+    const src = payload.sourceUrl as string;
+    const hint = { mime: payload.sourceMime ?? '', filename: src };
+    if (isEpubEntry(hint)) {
+      return { kind: 'epub', src, page, pageCount, title };
+    }
+    if (isPdfEntry(hint)) {
+      return { kind: 'pdf', src, page, pageCount, title };
+    }
+    return { kind: 'image', src, page, pageCount, title };
+  }
+
   // 4. A non-URL placeholder page (dev push before a render pipeline).
   if (pages.length > 0) {
     return { kind: 'placeholder', page, pageCount, title };
