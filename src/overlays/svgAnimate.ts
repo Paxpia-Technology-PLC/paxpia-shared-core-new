@@ -19,6 +19,14 @@
 // and linear `calcMode` (the default). Unhandled forms are dropped gracefully
 // (the element keeps its authored static attributes). PURE + Hermes-safe (no DOM,
 // no URL ctor); the platform supplies `nowMs` (an animation clock).
+//
+// INTERPOLATION FIDELITY: keyframe values are interpolated CONTINUOUSLY, not just
+// the plain numbers the first cut handled. `lerpValue` now covers a plain number
+// (opacity / stroke-dashoffset draw-ons), a multi-number tuple (translate / scale /
+// viewBox), a COLOR (fill / stroke / stop-color — per-channel RGBA), and a path-`d`
+// MORPH between two paths that share the same command skeleton. This is what makes
+// the animated lines/draw-ons that web renders natively actually appear on mobile
+// instead of snapping at the segment midpoint.
 
 /** Parse an SVG clock value (`dur`, `begin`) → milliseconds. Supports `1.5s`,
  *  `250ms`, a bare number (seconds), and `00:00:02` (h:m:s) loosely. Returns 0 for
@@ -95,24 +103,153 @@ function readRepeat(attrs: string): number {
   return Number.isFinite(n) && n > 0 ? n : 1;
 }
 
-/** Linearly interpolate between two NUMERIC keyframe strings; if either side isn't
- *  a plain number we fall back to a step (hold the from value until the midpoint),
- *  so a non-numeric value (e.g. a color word) at least advances discretely. */
+/** Round to a compact, stable precision (keeps the baked string small). */
+function r3(n: number): number {
+  return Math.round(n * 1000) / 1000;
+}
+
+// ── Color interpolation (the fix for "color keyframes fall to a discrete step") ──
+// SMIL `fill`/`stroke`/`stop-color` keyframes morph between two colors over the
+// timeline; without per-channel interpolation a fill would SNAP at the segment
+// midpoint. We parse #rgb / #rrggbb / rgb()/rgba() / the common named colors into
+// RGBA, lerp each channel, and re-emit rgb()/rgba() (a universally-valid SVG color
+// react-native-svg paints). A value we can't parse on EITHER side falls through to
+// the caller's step behaviour. Hermes-safe (no DOM/canvas color parsing).
+
+const NAMED_COLORS: Record<string, [number, number, number, number]> = {
+  black: [0, 0, 0, 1], white: [255, 255, 255, 1], red: [255, 0, 0, 1],
+  green: [0, 128, 0, 1], lime: [0, 255, 0, 1], blue: [0, 0, 255, 1],
+  yellow: [255, 255, 0, 1], cyan: [0, 255, 255, 1], aqua: [0, 255, 255, 1],
+  magenta: [255, 0, 255, 1], fuchsia: [255, 0, 255, 1], gray: [128, 128, 128, 1],
+  grey: [128, 128, 128, 1], silver: [192, 192, 192, 1], maroon: [128, 0, 0, 1],
+  olive: [128, 128, 0, 1], navy: [0, 0, 128, 1], teal: [0, 128, 128, 1],
+  purple: [128, 0, 128, 1], orange: [255, 165, 0, 1], transparent: [0, 0, 0, 0],
+};
+
+/** Parse a color string → [r,g,b,a] (0..255 channels, 0..1 alpha), or null. */
+function parseColor(s: string): [number, number, number, number] | null {
+  const v = s.trim().toLowerCase();
+  if (v === '') return null;
+  const named = NAMED_COLORS[v];
+  if (named) return [...named];
+  if (v[0] === '#') {
+    const hex = v.slice(1);
+    if (hex.length === 3 || hex.length === 4) {
+      const ch = hex.split('').map((c) => parseInt(c + c, 16));
+      if (ch.some((n) => !Number.isFinite(n))) return null;
+      return [ch[0], ch[1], ch[2], hex.length === 4 ? ch[3] / 255 : 1];
+    }
+    if (hex.length === 6 || hex.length === 8) {
+      const ch = [0, 2, 4, 6].map((i) => parseInt(hex.slice(i, i + 2), 16));
+      if (ch.slice(0, 3).some((n) => !Number.isFinite(n))) return null;
+      return [ch[0], ch[1], ch[2], hex.length === 8 ? ch[3] / 255 : 1];
+    }
+    return null;
+  }
+  const rgb = /^rgba?\(\s*([^)]+)\)$/.exec(v);
+  if (rgb) {
+    const parts = rgb[1].split(/[\s,/]+/).filter((p) => p !== '').map((p) => parseFloat(p));
+    if (parts.length >= 3 && parts.slice(0, 3).every(Number.isFinite)) {
+      return [parts[0], parts[1], parts[2], parts.length >= 4 && Number.isFinite(parts[3]) ? parts[3] : 1];
+    }
+  }
+  return null;
+}
+
+/** Interpolate two colors, returning a paintable rgb()/rgba() string, or null when
+ *  either side isn't a recognizable color (so the caller can step instead). */
+function lerpColor(a: string, b: string, f: number): string | null {
+  const ca = parseColor(a);
+  const cb = parseColor(b);
+  if (!ca || !cb) return null;
+  const ch = [0, 1, 2].map((i) => Math.round(ca[i] + (cb[i] - ca[i]) * f));
+  const al = r3(ca[3] + (cb[3] - ca[3]) * f);
+  return al >= 1 ? `rgb(${ch[0]},${ch[1]},${ch[2]})` : `rgba(${ch[0]},${ch[1]},${ch[2]},${al})`;
+}
+
+// ── Path `d` interpolation (the fix for "path-d morphs fall to discrete steps") ──
+// A draw-on / morph animates the `d` of a <path> between two keyframes. SMIL morphs
+// require the two `d` strings to share the SAME command structure (same letters in
+// the same order) — only the numeric operands change. We tokenize each into an
+// interleaved [command, ...numbers] stream and, when the command skeleton matches,
+// lerp the numbers in place (commands copied verbatim). A structural mismatch (a
+// genuinely different path topology) can't be linearly morphed, so we step.
+
+/** Split a path-`d` (or any number-bearing token string) into ordered tokens:
+ *  command letters and numeric operands, preserving order. */
+function pathTokens(d: string): { cmds: string; nums: number[]; order: ('c' | 'n')[] } {
+  const order: ('c' | 'n')[] = [];
+  let cmds = '';
+  const nums: number[] = [];
+  const re = /([a-zA-Z])|(-?\d*\.?\d+(?:e[-+]?\d+)?)/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(d)) !== null) {
+    if (m[1] != null) {
+      cmds += m[1];
+      order.push('c');
+    } else {
+      nums.push(parseFloat(m[2]));
+      order.push('n');
+    }
+  }
+  return { cmds, nums, order };
+}
+
+/** Interpolate two path-`d` strings sharing the same command skeleton + operand
+ *  count, lerping each numeric operand. Returns null on a structural mismatch. */
+function lerpPath(a: string, b: string, f: number): string | null {
+  const ta = pathTokens(a);
+  const tb = pathTokens(b);
+  if (
+    ta.cmds !== tb.cmds ||
+    ta.nums.length !== tb.nums.length ||
+    ta.order.length !== tb.order.length ||
+    ta.order.some((k, i) => k !== tb.order[i])
+  ) {
+    return null; // different topology → can't linearly morph
+  }
+  let ni = 0;
+  let ci = 0;
+  const cmdChars = ta.cmds.split('');
+  return ta.order
+    .map((k) => {
+      if (k === 'c') return cmdChars[ci++];
+      const v = ta.nums[ni] + (tb.nums[ni] - ta.nums[ni]) * f;
+      ni++;
+      return String(r3(v));
+    })
+    .join(' ')
+    .replace(/\s+([a-zA-Z])/g, '$1') // re-snug a command letter to its operands
+    .trim();
+}
+
+/** Linearly interpolate between two keyframe strings. Handles, in order: a plain
+ *  number (e.g. opacity / stroke-dashoffset), a multi-number tuple (translate /
+ *  scale / viewBox), a COLOR (fill / stroke / stop-color), and a path-`d` morph
+ *  sharing the same command skeleton. A pair we can't interpolate on either side
+ *  steps at the segment midpoint (hold `a`, then `b`) — the previous behaviour. */
 function lerpValue(a: string, b: string, f: number): string {
   const na = parseFloat(a);
   const nb = parseFloat(b);
   if (Number.isFinite(na) && Number.isFinite(nb) && /^-?\d*\.?\d+\s*$/.test(a) && /^-?\d*\.?\d+\s*$/.test(b)) {
-    const v = na + (nb - na) * f;
     // Trim to a sane precision so the string stays compact.
-    return String(Math.round(v * 1000) / 1000);
+    return String(r3(na + (nb - na) * f));
   }
   // Multi-number tuples (e.g. "0 0" → "10 20" for translate, or "1 1" → "2 2"):
   const ta = a.trim().split(/[\s,]+/).map(Number);
   const tb = b.trim().split(/[\s,]+/).map(Number);
   if (ta.length > 1 && ta.length === tb.length && ta.every(Number.isFinite) && tb.every(Number.isFinite)) {
-    return ta.map((x, i) => Math.round((x + (tb[i] - x) * f) * 1000) / 1000).join(' ');
+    return ta.map((x, i) => r3(x + (tb[i] - x) * f)).join(' ');
   }
-  return f < 0.5 ? a : b; // non-numeric → discrete step
+  // COLOR keyframes (fill / stroke / stop-color): per-channel RGBA lerp.
+  const col = lerpColor(a, b, f);
+  if (col != null) return col;
+  // PATH `d` morph / stroke-dasharray-style list with matching command skeleton.
+  if (/[a-df-zA-DF-Z]/.test(a) && /[a-df-zA-DF-Z]/.test(b)) {
+    const path = lerpPath(a, b, f);
+    if (path != null) return path;
+  }
+  return f < 0.5 ? a : b; // genuinely non-interpolable → discrete step
 }
 
 /** Compute the current value of an animation at `tMs` (absolute animation clock).
@@ -155,6 +292,27 @@ function bakeTransform(type: Anim['transformType'], value: string): string {
  *  so the renderer can skip the tick entirely for a static overlay. */
 export function hasSmilAnimation(svg: string): boolean {
   return /<animate(transform|motion)?\b/i.test(svg) || /<set\b/i.test(svg);
+}
+
+/** Extract the remote raster URLs referenced by an SVG's `<image href>` /
+ *  `<image xlink:href>` elements, so the platform can PREFETCH them before the SVG
+ *  paints (the fix for "image overlay shown without the image"). Only http(s)/data
+ *  URLs are returned — a relative/blob/file ref a remote viewer can't fetch is
+ *  skipped. De-duped, order-preserving. PURE + Hermes-safe (regex over the string,
+ *  no DOM). */
+export function extractSvgImageHrefs(svg: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const re = /<image\b[^>]*?\b(?:xlink:href|href)\s*=\s*("([^"]*)"|'([^']*)')/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(svg)) !== null) {
+    const url = (m[2] ?? m[3] ?? '').trim();
+    if (!url || seen.has(url)) continue;
+    if (!/^(https?:\/\/|data:)/i.test(url)) continue; // only fetchable refs
+    seen.add(url);
+    out.push(url);
+  }
+  return out;
 }
 
 /**
