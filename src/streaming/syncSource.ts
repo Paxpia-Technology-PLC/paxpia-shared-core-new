@@ -27,8 +27,20 @@
 import type { OverlayChannelEvent } from '../overlays/consume';
 import type { OverlayInstance } from '../overlays/types';
 import type { ViewerState } from './viewer';
-import type { DocPresenterState, LiveScene, LiveManifest } from './live';
+import {
+  initialViewerState,
+  applyLiveSync,
+  applySceneSync,
+  applyOverlayChanged,
+} from './viewer';
+import type { DocPresenterState, LiveScene, LiveManifest, LiveSyncMsg } from './live';
+import {
+  LIVESYNC_WIRE_VERSION,
+  encodeLiveSyncMsg,
+  dedupeManifest,
+} from './live';
 import type { RenderedScene } from './scene';
+import { encodeSceneSyncMsg, SCENE_WIRE_VERSION } from './scene';
 import type { WireOutbound } from './transport';
 
 // NOTE: `OverlayChannelEvent` (from overlays/consume.ts) and `WireOutbound` (from
@@ -111,4 +123,233 @@ export interface OverlaySyncSource {
   localMutate(m: LocalOverlayMutation): WireOutbound[];
   /** Reconnect recovery: what to (re)request + replay after a transport drop. */
   onReconnect(): ReconnectPlan;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TASK B — `LwwSyncSource`: the ship-first implementation. It WRAPS the existing
+// pure reducers (`applyLiveSync` / `applySceneSync` / `applyOverlayChanged`) so
+// its behaviour is IDENTICAL to today's forked consumption — zero new convergence
+// logic, zero risk. The render-brain (`useOverlaySession`, Task C) consumes ONLY
+// the `OverlaySyncSource` interface, so the day a `CrdtSyncSource` lands behind the
+// same interface, NOTHING above changes.
+//
+// PURE: holds an in-memory `ViewerState` + a subscriber set; no DOM/RN/SDK, no
+// `livekit-client`. The clock is injected via `ingest(ev, nowMs)` — the source
+// never reads a wall clock. (LWW convergence is `nonce`-monotonic, so `nowMs` is
+// carried for interface symmetry / a future CRDT's causal ordering but isn't read
+// by the LWW fold today.)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** A live producer snapshot the source can re-broadcast on reconnect. The producer
+ *  direction (studio / creator) feeds the source its current scene/doc/manifest via
+ *  `localMutate`; the source remembers the latest of each so `onReconnect()` can
+ *  replay them to a late joiner. A pure consumer never sets these → `replay` is
+ *  empty. */
+interface ProducerSnapshot {
+  scene: RenderedScene | null;
+  doc: OverlayInstance | null;
+  docPresenter: DocPresenterState | null;
+  liveScene: LiveScene | null;
+  manifest: LiveManifest | null;
+  /** Monotonic scene nonce the producer bumps on every `set-scene` so the viewer's
+   *  `applyFullScene` (monotonic-by-`nonce`) accepts each replace + ignores a stale
+   *  replay. */
+  nonce: number;
+}
+
+function emptyProducerSnapshot(): ProducerSnapshot {
+  return { scene: null, doc: null, docPresenter: null, liveScene: null, manifest: null, nonce: 0 };
+}
+
+/** Build the `live.sync` outbound that mirrors the producer's current doc-slot +
+ *  selected scene + manifest (the produce-side `live.sync` the consumer folds via
+ *  `applyLiveSync`). The manifest is deduped (`dedupeManifest`) so a re-granted
+ *  presigned URL doesn't trigger the viewer's preload reload loop. */
+function liveSyncOutbound(snap: ProducerSnapshot): WireOutbound {
+  const msg: LiveSyncMsg = {
+    t: 'live.sync',
+    v: LIVESYNC_WIRE_VERSION,
+    sceneId: snap.liveScene ? snap.liveScene.id : null,
+    scene: snap.liveScene,
+    doc: snap.doc,
+    docPresenter: snap.docPresenter,
+    manifest: dedupeManifest(snap.manifest),
+  };
+  return { bytes: encodeLiveSyncMsg(msg), reliable: true };
+}
+
+/** Build the `scene.sync` outbound carrying the producer's FULL-REPLACE rendered
+ *  scene (the authoritative paint source the consumer folds via `applySceneSync` →
+ *  `applyFullScene`). Reliable + ordered. */
+function sceneSyncOutbound(scene: RenderedScene): WireOutbound {
+  return { bytes: encodeSceneSyncMsg({ t: 'scene.sync', v: SCENE_WIRE_VERSION, scene }), reliable: true };
+}
+
+/** The LAST-WRITE-WINS-by-producer sync source (Task B). Wraps the existing pure
+ *  reducers so it is behaviour-identical to today's consumption; swappable for a
+ *  `CrdtSyncSource` (Task J) behind the same `OverlaySyncSource` interface. */
+export class LwwSyncSource implements OverlaySyncSource {
+  private state: ViewerState;
+  private readonly subs = new Set<(s: ViewerState) => void>();
+  private readonly producer: ProducerSnapshot = emptyProducerSnapshot();
+
+  constructor(initial?: ViewerState) {
+    this.state = initial ?? initialViewerState();
+  }
+
+  getState(): ViewerState {
+    return this.state;
+  }
+
+  subscribe(cb: (s: ViewerState) => void): () => void {
+    this.subs.add(cb);
+    return () => {
+      this.subs.delete(cb);
+    };
+  }
+
+  /** Fold a decoded inbound channel event into convergence via the EXISTING pure
+   *  reducers, then notify subscribers iff the converged state actually changed
+   *  (the reducers are referentially-stable on a no-op / stale snapshot, so a
+   *  duplicate/stale packet coalesces to zero notifications). */
+  ingest(ev: OverlayChannelEvent, _nowMs: number): void {
+    const prev = this.state;
+    const next = foldEvent(prev, ev);
+    if (next !== prev) {
+      this.state = next;
+      this.emit();
+    }
+  }
+
+  /** Produce-side mutation: update the remembered producer snapshot, fold the change
+   *  into the LOCAL converged state (so the producer paints from the same
+   *  `getState()` a viewer does), and return the wire message(s) to broadcast. */
+  localMutate(m: LocalOverlayMutation): WireOutbound[] {
+    switch (m.kind) {
+      case 'set-scene': {
+        // Adopt the producer's full-replace scene, stamping the next monotonic nonce
+        // so the viewer's `applyFullScene` accepts it (and ignores a stale replay).
+        this.producer.nonce = Math.max(this.producer.nonce + 1, m.scene.nonce);
+        const scene: RenderedScene = { ...m.scene, nonce: this.producer.nonce };
+        this.producer.scene = scene;
+        this.applyLocal((s) => applySceneSync(s, scene));
+        return [sceneSyncOutbound(scene)];
+      }
+      case 'set-doc': {
+        this.producer.doc = m.doc;
+        return [this.broadcastLiveSync()];
+      }
+      case 'set-doc-presenter': {
+        this.producer.docPresenter = m.presenter;
+        return [this.broadcastLiveSync()];
+      }
+      case 'set-live-scene': {
+        this.producer.liveScene = m.scene;
+        return [this.broadcastLiveSync()];
+      }
+      case 'set-manifest': {
+        this.producer.manifest = m.manifest;
+        return [this.broadcastLiveSync()];
+      }
+      case 'end-live': {
+        // The stream-end wipe sentinel: {doc:null, scene:null}. Reset the producer
+        // snapshot so a subsequent reconnect doesn't replay a dead scene.
+        this.producer.doc = null;
+        this.producer.docPresenter = null;
+        this.producer.liveScene = null;
+        this.producer.manifest = null;
+        this.producer.scene = null;
+        const out: WireOutbound = {
+          bytes: encodeLiveSyncMsg({ t: 'live.sync', v: LIVESYNC_WIRE_VERSION, doc: null, scene: null }),
+          reliable: true,
+        };
+        this.applyLocal((s) =>
+          applyLiveSync(s, { t: 'live.sync', v: LIVESYNC_WIRE_VERSION, doc: null, scene: null }),
+        );
+        return [out];
+      }
+      default: {
+        // Exhaustiveness guard — a new mutation verb without a handler is a compile
+        // error here (the union stays the single source of truth).
+        const _never: never = m;
+        return _never;
+      }
+    }
+  }
+
+  /** Reconnect recovery (the ONE shared plan). A consumer always re-requests state
+   *  (replay the active overlay + my vote + the latest live.sync/scene.sync). A
+   *  PRODUCER additionally re-broadcasts its current scene/doc/manifest so a
+   *  (re)joining participant reconstructs the surface — with the manifest already
+   *  deduped so a re-grant can't reload-loop the viewer. */
+  onReconnect(): ReconnectPlan {
+    const replay: WireOutbound[] = [];
+    if (this.producer.scene) replay.push(sceneSyncOutbound(this.producer.scene));
+    if (this.producer.doc || this.producer.liveScene || this.producer.manifest) {
+      replay.push(liveSyncOutbound(this.producer));
+    }
+    return { requestState: true, replay };
+  }
+
+  // ── internals ──────────────────────────────────────────────────────────────
+
+  private broadcastLiveSync(): WireOutbound {
+    const out = liveSyncOutbound(this.producer);
+    // Fold the producer's own live.sync into local convergence so its render-brain
+    // sees the same doc/scene/manifest a viewer would (the producer paints from
+    // getState() too).
+    this.applyLocal((s) =>
+      applyLiveSync(s, {
+        t: 'live.sync',
+        v: LIVESYNC_WIRE_VERSION,
+        sceneId: this.producer.liveScene ? this.producer.liveScene.id : null,
+        scene: this.producer.liveScene,
+        doc: this.producer.doc,
+        docPresenter: this.producer.docPresenter,
+        manifest: dedupeManifest(this.producer.manifest),
+      }),
+    );
+    return out;
+  }
+
+  private applyLocal(fold: (s: ViewerState) => ViewerState): void {
+    const next = fold(this.state);
+    if (next !== this.state) {
+      this.state = next;
+      this.emit();
+    }
+  }
+
+  private emit(): void {
+    for (const cb of this.subs) cb(this.state);
+  }
+}
+
+/** Construct a fresh `LwwSyncSource` (a thin factory mirroring the other core
+ *  machines' `createX` ergonomics; the class is exported too for `instanceof`). */
+export function createLwwSyncSource(initial?: ViewerState): LwwSyncSource {
+  return new LwwSyncSource(initial);
+}
+
+/** Fold ONE decoded channel event into the viewer state via the EXISTING pure
+ *  reducers — the single ingest routing table. EXPORTED so the render-brain (Task C)
+ *  and tests can verify "decoded event → reducer" parity with the legacy hooks
+ *  without a `LwwSyncSource` instance. PURE.
+ *
+ *  • `live.sync`      → `applyLiveSync`        (doc slot + scene + manifest + presenter)
+ *  • `scene.sync`     → `applySceneSync`       (FULL-REPLACE rendered layer)
+ *  • `overlay.changed`→ `applyOverlayChanged`  (server-bot participation slot)
+ *  • everything else  → unchanged (results/response/control/svg/unsupported are NOT
+ *    part of the converged ViewerState — votes/SVG/control fold elsewhere). */
+export function foldEvent(state: ViewerState, ev: OverlayChannelEvent): ViewerState {
+  switch (ev.kind) {
+    case 'live.sync':
+      return applyLiveSync(state, ev.msg);
+    case 'scene.sync':
+      return applySceneSync(state, ev.msg.scene);
+    case 'overlay.changed':
+      return applyOverlayChanged(state, ev.msg.overlay);
+    default:
+      return state;
+  }
 }

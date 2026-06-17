@@ -33,6 +33,10 @@
 import type { ManifestEntry } from './live';
 import type { ViewerRoomOptions, ViewerConnectOptions } from './join';
 import type { RoomHandle } from './transport';
+import { manifestHasVideoSource } from './prep';
+import type { RoomManifest } from './prep';
+import { sceneHasVideoSource } from './live';
+import type { LiveScene } from './live';
 
 /** The minimal cancellation-signal shape the gate's `preloadMaterial` honors,
  *  structurally satisfied by the DOM/Node `AbortSignal`. Declared locally so core
@@ -165,14 +169,243 @@ export interface GateAdapter {
   subscribeReadiness(handle: RoomHandle): GateReadinessSignals;
 }
 
-// ── TODO(Task D): the gate MACHINE impl lives here ───────────────────────────
-// Task D adds the pure `GateState` machine to THIS file: `initialGateState` +
-// the transitions that compose prep.ts (release-media/settle/preload) + entry.ts
-// (manifest-ready/first-snapshot) + connection.ts (the connect-generation guard /
-// retry), sequence the two checklists (visible vs hidden), branch on
-// `GateConnectOpts.expectVideo` (omit video steps when false), run the
-// `mute-applied` step before hand-off, and compute `canHandOff` only when every
-// step is `done`. It also calls `RoomHandle.teardown()` on a failed/aborted join.
-// Until then this file exports the TYPES ONLY (Task A) — every gate consumer
-// (the `<EntryGate>` shell, Task F; the platform `GateAdapter`s, Task I) compiles
-// against the interfaces above now and wires to the machine when it lands.
+// ═════════════════════════════════════════════════════════════════════════════
+// TASK D — THE GATE MACHINE (pure). Composes prep.ts (release-media/settle/preload)
+// + entry.ts (manifest-ready/first-snapshot) + connection.ts (the join, behind the
+// connect-generation guard the adapter applies) into ONE `GateState`, sequences the
+// two checklists, branches on `expectVideo` (the video-less boot-loop fix), runs
+// `mute-applied` as a pre-session step, and hands off ONLY when EVERY step is done.
+//
+// PURE: no DOM/RN/SDK, no `livekit-client`, no timers. The platform performs the
+// effects (via `GateAdapter`) and feeds COMPLETION events back to the reducer; the
+// machine only decides ordering + readiness. The `RoomHandle.teardown()` on a
+// failed/aborted join is the PLATFORM's call (it holds the handle); the machine
+// surfaces `phase:'failed'` so the driver knows to tear down.
+// ═════════════════════════════════════════════════════════════════════════════
+
+/** Does this room expect a VIDEO track? Derived from the listing manifest
+ *  (`manifestHasVideoSource`) OR the in-room synced scene (`sceneHasVideoSource`) —
+ *  either positively placing a camera/screen source means "expect video". When
+ *  BOTH are video-less the room is audio-only (the jazz docrooms) and the gate must
+ *  NOT add the video readiness wait. THE video-less boot-loop fix lives here +
+ *  `buildGateSteps`. PURE. */
+export function deriveExpectVideo(
+  manifest: RoomManifest | null | undefined,
+  scene: LiveScene | null | undefined,
+): boolean {
+  return manifestHasVideoSource(manifest) || sceneHasVideoSource(scene);
+}
+
+/** The ordered VISIBLE step ids (render in the loading shell, green-✓). */
+const VISIBLE_STEP_IDS: readonly GateStepId[] = ['join-room', 'download'];
+
+/** The ordered HIDDEN step ids that gate `canHandOff` but don't clutter the UI.
+ *  `subscribe-tracks` waits on audio (and, when `expectVideo`, also video — see
+ *  `GateReadinessSignals`); the video-less branch never adds a SEPARATE video step,
+ *  so an audio-only room passes on audio + manifest + first-snapshot alone. */
+const HIDDEN_STEP_IDS: readonly GateStepId[] = [
+  'reclaim-decoders',
+  'subscribe-tracks',
+  'mute-applied',
+  'manifest-ready',
+  'first-snapshot',
+];
+
+/** User-facing labels for each step (shared so web + RN render the same copy). */
+const STEP_LABELS: Record<GateStepId, string> = {
+  'release-media': 'Freeing resources',
+  settle: 'Preparing',
+  preload: 'Loading materials',
+  'join-room': 'Joining room',
+  download: 'Downloading materials',
+  'reclaim-decoders': 'Reclaiming decoders',
+  'subscribe-tracks': 'Subscribing to media',
+  'mute-applied': 'Applying audio settings',
+  'manifest-ready': 'Reading manifest',
+  'first-snapshot': 'Syncing stream',
+};
+
+/** Build the gate's step list for a room. The set is FIXED (visible: join-room,
+ *  download; hidden: reclaim-decoders, subscribe-tracks, mute-applied,
+ *  manifest-ready, first-snapshot) — `expectVideo` does NOT add/remove a step here;
+ *  it changes ONLY what `subscribe-tracks` waits on (audio vs audio+video), so an
+ *  audio-only room can never block on a video track that will never arrive. All
+ *  steps start `pending`. PURE. */
+export function buildGateSteps(): GateStep[] {
+  const mk = (id: GateStepId, visible: boolean): GateStep => ({
+    id,
+    label: STEP_LABELS[id],
+    visible,
+    status: 'pending',
+    ...(id === 'download' ? { progress: 0 } : {}),
+  });
+  return [
+    ...VISIBLE_STEP_IDS.map((id) => mk(id, true)),
+    ...HIDDEN_STEP_IDS.map((id) => mk(id, false)),
+  ];
+}
+
+/** The gate's full machine state. Carries `expectVideo` (the video-less branch
+ *  selector) alongside the rendered `GateState` so transitions read it without a
+ *  re-derive. */
+export interface GateMachine extends GateState {
+  /** False ⇒ audio-only room: `subscribe-tracks` completes on audio alone. */
+  expectVideo: boolean;
+}
+
+/** Construct the initial gate machine. `expectVideo` selects the audio-only branch
+ *  (derive it via `deriveExpectVideo`). Phase starts `prepping` (the pre-connect
+ *  release/settle/preload beat runs before the visible `join-room` step opens). */
+export function initialGateState(expectVideo: boolean): GateMachine {
+  return {
+    steps: buildGateSteps(),
+    phase: 'prepping',
+    canHandOff: false,
+    expectVideo,
+  };
+}
+
+/** The events the platform driver feeds the pure machine as the adapter's effects
+ *  complete. Each maps to exactly one step (or the phase). PURE reducer below. */
+export type GateEvent =
+  /** The pre-connect prep beat (prep.ts release-media → settle → preload) finished;
+   *  the gate may open the connect. Moves `prepping → connecting`. */
+  | { type: 'prep-done' }
+  /** The LiveKit connect resolved (`GateAdapter.connectRoom`) — the `join-room` step. */
+  | { type: 'joined' }
+  /** Mute applied to the OUTPUT pre-session (`applyMuteBeforeSession`) — the
+   *  `mute-applied` step. Runs BEFORE hand-off so there's no connect-time blip. */
+  | { type: 'mute-applied' }
+  /** Native decoder reclaim resolved (RN-only; web feeds this immediately as a
+   *  no-op true) — the `reclaim-decoders` step. */
+  | { type: 'decoders-reclaimed' }
+  /** Real download progress for the visible `download` step (0..1, HEAD-size %). */
+  | { type: 'download-progress'; progress: number }
+  /** The manifest material download completed — the `download` step → done. */
+  | { type: 'download-done' }
+  /** The room manifest is in hand (in-room live.sync or listing) — `manifest-ready`. */
+  | { type: 'manifest-ready' }
+  /** Live A/V + first-snapshot readiness from `subscribeReadiness`. The machine
+   *  decides `subscribe-tracks` (audio, +video when `expectVideo`) + `first-snapshot`
+   *  from these — so the audio-only room never waits on video. */
+  | { type: 'readiness'; signals: GateReadinessSignals }
+  /** The join failed or was aborted → `phase:'failed'` (the driver tears the handle
+   *  down). `manifest-vs-room` hygiene: a failed join clears nothing here; the
+   *  platform calls `RoomHandle.teardown()`. */
+  | { type: 'failed' };
+
+/** Set a step's status (and optional progress), returning a NEW steps array only
+ *  when something changed (stable identity otherwise). */
+function setStep(
+  steps: GateStep[],
+  id: GateStepId,
+  status: GateStep['status'],
+  progress?: number,
+): GateStep[] {
+  let changed = false;
+  const next = steps.map((s) => {
+    if (s.id !== id) return s;
+    const p = progress !== undefined ? progress : s.progress;
+    if (s.status === status && s.progress === p) return s;
+    changed = true;
+    return { ...s, status, ...(p !== undefined ? { progress: p } : {}) };
+  });
+  return changed ? next : steps;
+}
+
+/** True when EVERY step (visible AND hidden) is `done` — the SOLE hand-off gate.
+ *  100% download alone never hands off (the hidden readiness steps must all be done
+ *  too). */
+function allStepsDone(steps: GateStep[]): boolean {
+  return steps.every((s) => s.status === 'done');
+}
+
+/** Recompute the machine from a (possibly new) steps array + an optional phase
+ *  override. Returns the SAME machine instance when nothing actually changed
+ *  (`steps` identical AND phase/canHandOff unchanged) — so a redundant completion
+ *  event is a React-dep-friendly no-op. `failed` is sticky. */
+function recompute(m: GateMachine, steps: GateStep[], phaseOverride?: GateState['phase']): GateMachine {
+  if (m.phase === 'failed') return m;
+  const canHandOff = allStepsDone(steps);
+  const phase: GateState['phase'] = canHandOff ? 'ready' : (phaseOverride ?? m.phase);
+  if (steps === m.steps && canHandOff === m.canHandOff && phase === m.phase) return m;
+  return { ...m, steps, phase, canHandOff };
+}
+
+/** Fold an `expectVideo` flag + the live readiness signals into the
+ *  `subscribe-tracks` + `first-snapshot` step statuses.
+ *   • `subscribe-tracks` → done when audio is subscribed AND (video is subscribed OR
+ *     this is an audio-only room). THE video-less branch: `expectVideo:false` ⇒
+ *     video is NEVER required, so the step completes on audio alone and the gate
+ *     can't hang on a track that will never arrive.
+ *   • `first-snapshot` → done on the first overlay/live.sync/scene.sync snapshot. */
+function applyReadiness(steps: GateStep[], expectVideo: boolean, sig: GateReadinessSignals): GateStep[] {
+  const videoOk = !expectVideo || sig.hasVideo;
+  const tracksDone = sig.hasAudio && videoOk;
+  let next = setStep(steps, 'subscribe-tracks', tracksDone ? 'done' : 'active');
+  next = setStep(next, 'first-snapshot', sig.firstSnapshot ? 'done' : 'active');
+  return next;
+}
+
+/** THE PURE TRANSITION. Folds one `GateEvent` into the machine. Same input → same
+ *  output on web + RN, so the gate lifecycle can never diverge. Returns the SAME
+ *  machine on a no-op (stable identity for React deps). */
+export function gateTransition(m: GateMachine, ev: GateEvent): GateMachine {
+  if (m.phase === 'failed') return m; // terminal
+  switch (ev.type) {
+    case 'prep-done': {
+      // Pre-connect beat done → open the connect. Mark the visible join-room active.
+      const phase: GateState['phase'] = m.phase === 'prepping' ? 'connecting' : m.phase;
+      const steps = setStep(m.steps, 'join-room', 'active');
+      return recompute(m, steps, phase);
+    }
+    case 'joined': {
+      return recompute(m, setStep(m.steps, 'join-room', 'done'));
+    }
+    case 'mute-applied': {
+      return recompute(m, setStep(m.steps, 'mute-applied', 'done'));
+    }
+    case 'decoders-reclaimed': {
+      return recompute(m, setStep(m.steps, 'reclaim-decoders', 'done'));
+    }
+    case 'download-progress': {
+      const clamped = Math.max(0, Math.min(1, ev.progress));
+      // Progress keeps the step `active` even at 100% — `download-done` is the
+      // authoritative completion (a 100% byte count still waits on the writer), so
+      // 100% download alone never advances the gate (the §5a "100% ≠ go" rule).
+      return recompute(m, setStep(m.steps, 'download', 'active', clamped));
+    }
+    case 'download-done': {
+      return recompute(m, setStep(m.steps, 'download', 'done', 1));
+    }
+    case 'manifest-ready': {
+      return recompute(m, setStep(m.steps, 'manifest-ready', 'done'));
+    }
+    case 'readiness': {
+      return recompute(m, applyReadiness(m.steps, m.expectVideo, ev.signals));
+    }
+    case 'failed': {
+      return { ...m, phase: 'failed', canHandOff: false };
+    }
+    default: {
+      const _never: never = ev;
+      return _never;
+    }
+  }
+}
+
+/** Convenience: derive `expectVideo` from a room's signals + build the initial
+ *  machine in one call. */
+export function createGate(args: {
+  manifest?: RoomManifest | null;
+  scene?: LiveScene | null;
+}): GateMachine {
+  return initialGateState(deriveExpectVideo(args.manifest, args.scene));
+}
+
+/** The single hand-off predicate the driver reads — true ONLY when every step
+ *  (visible AND hidden) is done. (Mirrors `GateState.canHandOff`; exported as a
+ *  function so a caller with just the `GateState` can ask without the machine.) */
+export function canGateHandOff(state: GateState): boolean {
+  return state.canHandOff && allStepsDone(state.steps);
+}

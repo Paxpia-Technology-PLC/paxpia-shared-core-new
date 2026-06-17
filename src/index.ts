@@ -337,6 +337,30 @@ export type {
   LocalOverlayMutation,
   ReconnectPlan,
 } from './streaming/syncSource';
+// Task B — `LwwSyncSource`: the ship-first sync source wrapping the existing pure
+// reducers (behaviour-identical to today). `foldEvent` is the exported ingest
+// routing table (decoded channel event → reducer) the render-brain + tests share.
+export { LwwSyncSource, createLwwSyncSource, foldEvent } from './streaming/syncSource';
+// Task C — `useOverlaySession`: the ONE headless render-brain hook (web + mobile +
+// studio + creator dashboard) over { source, transport }. Returns today's
+// LivestreamSync shape ONCE. The vote/takeover folds are exported as pure reducers
+// (`applyVoteChanged`/`applyVoteResults`/`applyOptimisticVote`/`deriveVoteView`/
+// `reconcileDocTakeover`) so they're testable with no React renderer.
+export type {
+  OverlaySession,
+  UseOverlaySessionArgs,
+  VoteState,
+  PresentedDoc,
+} from './streaming/useOverlaySession';
+export {
+  useOverlaySession,
+  initialVoteState,
+  applyVoteChanged,
+  applyVoteResults,
+  applyOptimisticVote,
+  deriveVoteView,
+  reconcileDocTakeover,
+} from './streaming/useOverlaySession';
 // THE CONSOLIDATED ENTRY GATE TYPES (§5a/§5b) — `GateStepId`/`GateStep`/`GateState`
 // (the two-checklist machine output), `GateConnectOpts`/`GateReadinessSignals`, and
 // the `GateAdapter` callback contract (the only platform code in the gate). TYPES
@@ -351,6 +375,19 @@ export type {
   GateReadinessSignals,
   GateAdapter,
   AbortLike,
+} from './streaming/gate';
+// Task D — the pure GATE MACHINE: `initialGateState`/`createGate` + the
+// `gateTransition` reducer composing prep + entry + connection into ONE checklist,
+// with the `expectVideo:false` branch (audio-only rooms pass on audio+manifest
+// alone — the video-less boot-loop fix) and `mute-applied` as a pre-session step.
+export type { GateMachine, GateEvent } from './streaming/gate';
+export {
+  deriveExpectVideo,
+  buildGateSteps,
+  initialGateState,
+  gateTransition,
+  createGate,
+  canGateHandOff,
 } from './streaming/gate';
 // Layout: the canonical resizable/reorderable scene model (LayoutItem, Scene,
 // clampRect/moveItem/resizeItem/reorderZ/fitToBox). RN-portable; web + mobile share it.
