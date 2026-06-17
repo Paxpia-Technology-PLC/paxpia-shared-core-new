@@ -77,3 +77,26 @@ export interface UserOverlayState {
   choice?: string;
   actedAtUnix?: number;
 }
+
+/** The CANONICAL participation view-model the overlay renderers (poll / quiz /
+ *  vote-button) consume — `voted`/`mine`/`tallies`/`total`/`onVote`. It is the
+ *  single shape that drives a participation overlay's render + interaction:
+ *    • `voted`  — has this viewer committed a choice this round?
+ *    • `mine`   — the choice they committed (option id), if any.
+ *    • `tallies`— per-option vote counts (server-mirrored + optimistic fold).
+ *    • `total`  — the sum across options (the denominator for the % bars).
+ *    • `onVote` — commit a choice (the platform binds this to the data channel).
+ *
+ *  Promoted here (out of BOTH web `overlay/renderers.tsx` AND mobile
+ *  `useLivestreamSync.ts`, where it was duplicated verbatim) so web + mobile +
+ *  the studio + the mobile creator dashboard all reference ONE definition. The
+ *  render-brain (`useOverlaySession`, Task C) returns this; the `@paxpia/ui`
+ *  participation components (Task E) consume it. Pure — no platform primitive in
+ *  the shape, only the `onVote` callback the platform supplies. */
+export interface OverlayViewProps {
+  voted: boolean;
+  mine?: string;
+  tallies: Record<string, number>;
+  total: number;
+  onVote: (choice: string) => void;
+}

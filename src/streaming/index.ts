@@ -62,3 +62,17 @@ export * from './chat';
 // newest-first ordering helper, the deposit-bump, and the P1.6 stage-interactivity
 // SCAFFOLD (raise-hand/invite/opt-in/promote types + topic + no-op handler).
 export * from './viewers';
+// THIN TRANSPORT interfaces — OverlayTransport (respond/requestState/publish/
+// onEvent) + RoomHandle (teardown + opaque track/audio tokens). The seam between
+// the pure render-brain/gate and the LiveKit SDK in a platform shell. Type-only.
+export * from './transport';
+// THE OVERLAY SYNC SOURCE SEAM (§3c) — OverlaySyncSource + LocalOverlayMutation +
+// ReconnectPlan (interfaces/types only; LwwSyncSource is Task B, CrdtSyncSource is
+// Task J). The render-brain paints from getState()/subscribe ONLY, so a CRDT layer
+// slots under it untouched.
+export * from './syncSource';
+// THE CONSOLIDATED ENTRY GATE (§5) — GateStepId/GateStep/GateState +
+// GateConnectOpts/GateReadinessSignals + the GateAdapter callback contract. TYPES
+// ONLY for now (the machine impl composing prep.ts+entry.ts+connection.ts is
+// Task D). The gate owns the connect (LiveKit behind it); video-less is first-class.
+export * from './gate';

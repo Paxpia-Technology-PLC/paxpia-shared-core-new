@@ -318,6 +318,40 @@ export {
   applyStageRequest,
 } from './streaming/viewers';
 export * from './overlays';
+// THIN PLATFORM-BINDING TRANSPORT interfaces — `OverlayTransport`
+// (respond/requestState/publish/onEvent) + `RoomHandle` (teardown + opaque
+// track/audio tokens + bound transport). The seam between the pure render-brain /
+// gate and the LiveKit SDK that only lives in a platform shell. Type-only — no
+// `livekit-client` in core.
+export type { WireOutbound, OverlayTransport, RoomHandle } from './streaming/transport';
+// THE OVERLAY SYNC SOURCE SEAM (§3c): `OverlaySyncSource` — the single interface
+// the render-brain consumes for a converged `ViewerState`, with `LwwSyncSource`
+// (ship) and `CrdtSyncSource` (later) swappable behind it. Plus its supporting
+// types: `LocalOverlayMutation` (produce-side intents) + `ReconnectPlan` (the
+// formalized recovery plan). The seam's other vocabulary — `OverlayChannelEvent`
+// (the decoded channel event) and `WireOutbound` — are exported from their owning
+// modules (overlays/consume + streaming/transport, both barreled above). Designed
+// now so a CRDT layer slots under the render-brain untouched.
+export type {
+  OverlaySyncSource,
+  LocalOverlayMutation,
+  ReconnectPlan,
+} from './streaming/syncSource';
+// THE CONSOLIDATED ENTRY GATE TYPES (§5a/§5b) — `GateStepId`/`GateStep`/`GateState`
+// (the two-checklist machine output), `GateConnectOpts`/`GateReadinessSignals`, and
+// the `GateAdapter` callback contract (the only platform code in the gate). TYPES
+// ONLY for now; the machine impl is Task D. The gate owns the connect (LiveKit
+// behind it), branches on `expectVideo` (video-less first-class), and applies mute
+// pre-session.
+export type {
+  GateStepId,
+  GateStep,
+  GateState,
+  GateConnectOpts,
+  GateReadinessSignals,
+  GateAdapter,
+  AbortLike,
+} from './streaming/gate';
 // Layout: the canonical resizable/reorderable scene model (LayoutItem, Scene,
 // clampRect/moveItem/resizeItem/reorderZ/fitToBox). RN-portable; web + mobile share it.
 export * from './layout';
