@@ -65,9 +65,18 @@ export interface OverlayTransport {
  *  surface forwards them straight to the platform's `<VideoTrack>` / audio
  *  attach — it never inspects them. */
 export interface RoomHandle {
-  /** Tear down this room connection + release all its resources. The gate calls
-   *  this on a FAILED or ABORTED join so leftover LiveKit state from an aborted
-   *  join is cleaned (lifecycle hygiene, §5b). Idempotent. */
+  /** Tear down this room connection + release ALL its resources. The gate calls this
+   *  on a FAILED or ABORTED join, and the driver calls it on viewer UNMOUNT / AppState
+   *  → background, so leftover LiveKit state from an aborted/left/backgrounded join is
+   *  cleaned (lifecycle hygiene, §5b). Idempotent (safe to call mid-connect + twice).
+   *
+   *  CONTRACT — this MUST do more than `room.disconnect()`: a bare disconnect can leave
+   *  a CBS/audio room's remote AUDIO track decoding through the platform's device-output
+   *  renderer (the native OS audio session / Android foreground `mediaPlayback` service),
+   *  so the audio keeps playing after the viewer is left/backgrounded/closed (the
+   *  "ghost audio" leak). The platform impl MUST therefore explicitly STOP + DETACH every
+   *  remote audio track's output renderer (`detach()` + `stop()`) BEFORE/around the
+   *  disconnect, so leaving the viewer provably stops the audio — not just the signaling. */
   teardown(): void;
   /** The remote VIDEO track token to attach to a platform video element, or null
    *  when there is no video source (video-less / audio-only room). Opaque to core. */
