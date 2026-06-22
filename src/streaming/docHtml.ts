@@ -281,6 +281,10 @@ function buildEpubHtml(o: BuildDocHtmlOptions): string {
   const mode: DocViewMode = o.mode ?? 'single';
   const scrolled = mode === 'scroll';
   const body = [
+    // EPUB fills the viewport in BOTH modes; epub.js owns the scroll (paginated = one
+    // page; CONTINUOUS = the whole book in ONE scroller — fixes "scroll stuck on one
+    // chapter"). Override frameHead's pdf-oriented scroll so the body never double-scrolls.
+    '<style>html,body{height:100%;overflow:hidden;}#stage{position:fixed;inset:0;overflow:hidden;}#content{height:100%;}#area{height:100%;}</style>',
     '<div id="stage"><div id="content"><div id="area"></div></div></div><div id="e"></div>',
     '<script src="' + libs.jszip + '"></script>',
     '<script src="' + libs.epubjs + '"></script>',
@@ -290,7 +294,7 @@ function buildEpubHtml(o: BuildDocHtmlOptions): string {
     '__onSetPage=function(n0){if(!__rend||!__book)return;try{var spine=__book.spine;if(spine&&spine.get){var it=spine.get(n0|0);if(it)__rend.display(it.href);}}catch(_){}};',
     'if(!window.ePub){showErr("Could not load EPUB engine");report({e:"err",m:"no-epub-lib"});}else{try{',
     'var book=ePub(' + JSON.stringify(o.url) + ');__book=book;',
-    'var rendition=book.renderTo("area",{width:"100%",height:' + (scrolled ? '"auto"' : '"100%"') + ',flow:' + (scrolled ? '"scrolled-doc"' : '"paginated"') + ',spread:"none"});__rend=rendition;',
+    'var rendition=book.renderTo("area",{width:"100%",height:"100%",flow:' + (scrolled ? '"scrolled"' : '"paginated"') + ',manager:' + (scrolled ? '"continuous"' : '"default"') + ',spread:"none"});__rend=rendition;',
     'rendition.themes.default({"body":{"background":"#0b0e16","color":"#e8e8ef","padding":"0 14px"}});',
     'rendition.display().then(function(){report({e:"ready"});});',
     'book.ready.then(function(){var n=(book.spine&&book.spine.length)||(book.packaging&&book.packaging.spine&&book.packaging.spine.length)||1;__total=n;report({e:"pages",n:n});}).catch(function(){showErr("Could not open EPUB");report({e:"err",m:"not-ready"});});',
