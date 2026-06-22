@@ -30,6 +30,7 @@ import {
   type OverlayControlMsg,
 } from './wire';
 import { decodeSvgOverlayMsg, type SvgOverlayMsg } from './svg';
+import { decodeWbMsg, type WbMsg } from './whiteboard';
 import { decodeLiveSyncMsg, type LiveSyncMsg } from '../streaming/live';
 import { decodeSceneSyncMsg, type SceneSyncMsg } from '../streaming/scene';
 
@@ -53,6 +54,8 @@ export type OverlayChannelEvent =
   | { kind: 'scene.sync'; msg: SceneSyncMsg }
   /** SET/REPLACE or DELETE a positioned SVG overlay. */
   | { kind: 'overlay.svg'; msg: SvgOverlayMsg }
+  /** A whiteboard stroke/erase/wipe/snapshot delta (retires the private live.data plane). */
+  | { kind: 'overlay.wb'; msg: WbMsg }
   /** The payload was on-topic but no decoder claimed it (an unknown/newer `t`, or a
    *  malformed/oversized envelope a decoder rejected). `t` carries the raw type tag
    *  when one was present, so a consumer can log a precise "unsupported overlay
@@ -109,6 +112,9 @@ export function decodeOverlayChannelMsg(bytes: Uint8Array): OverlayChannelEvent 
 
   const svg = decodeSvgOverlayMsg(bytes);
   if (svg) return { kind: 'overlay.svg', msg: svg };
+
+  const wb = decodeWbMsg(bytes);
+  if (wb) return { kind: 'overlay.wb', msg: wb };
 
   return { kind: 'unsupported', t: peekType(bytes) };
 }

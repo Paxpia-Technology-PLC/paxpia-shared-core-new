@@ -10,7 +10,8 @@ export type OverlayKind =
   | 'vote-button' // two-sided TikTok-style vote (A vs B)
   | 'quiz' // question + answers, collects responses
   | 'doc' // synced paged document
-  | 'gift'; // gift toast feed
+  | 'gift' // gift toast feed
+  | 'whiteboard'; // synced, takeover-capable freehand board (WebView-rendered, like doc)
 
 export type OverlayPhase = 'idle' | 'active' | 'closed';
 
@@ -65,6 +66,21 @@ export interface DocPayload {
    *  pages[] (reflowable, never rasterized), so with no manifest AND no mime hint the
    *  plan would fall to 'empty'. Live rooms still derive the kind from the manifest. */
   sourceMime?: string;
+}
+
+/** A live whiteboard. Strokes do NOT live here (they stream as deltas, like doc
+ *  pages broadcast separately); the payload is just the board identity + canvas
+ *  geometry every front renders in, so a viewer can resolve a render plan offline.
+ *  Strokes ride the SHARED `overlay` topic as `overlay.wb.*` envelopes (see
+ *  overlays/whiteboard.ts) and are composited natively in the WebView (whiteboardHtml.ts),
+ *  exactly like the doc engine — NOT a private data plane. */
+export interface WhiteboardPayload {
+  boardId: string;
+  /** The fixed authoring/render space (publisher coords). Default 1000x1000. */
+  canvas: { w: number; h: number };
+  /** Optional background (a presigned image/PDF-page url) the board is drawn over. */
+  backgroundUrl?: string;
+  title?: string;
 }
 
 /** Per-user, per-overlay state that MUST persist across logout/login (e.g. "you

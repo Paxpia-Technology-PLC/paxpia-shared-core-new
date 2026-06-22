@@ -38,6 +38,12 @@ export * from './docViewport';
 // the shared docViewport math drives PDF/EPUB exactly like images (sync + viewer
 // takeover for every doc kind). libs are parameterised (CDN now → local bundle later).
 export * from './docHtml';
+// The ONE shared WHITEBOARD renderer (HTML): a self-contained <svg> board hosted in the
+// SAME WebView frame as docHtml — reuses its transform/gesture/report engine VERBATIM, so
+// the whiteboard inherits the doc personal-streamer pan/zoom/takeover model + a content-
+// only screenshot. Strokes ride the shared `overlay` topic (overlays/whiteboard.ts), not
+// a private data plane. buildWhiteboardHtml is the single entry the platform hosts call.
+export * from './whiteboardHtml';
 // The UNIFIED room-join handshake: canonical viewer Room/connect options (the
 // adaptiveStream-off churn fix, made the single source of truth), the
 // connect/reuse/defer-teardown reconciler (focus-blip vs real navigation), the

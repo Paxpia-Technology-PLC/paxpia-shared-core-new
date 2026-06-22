@@ -218,12 +218,28 @@ export {
   parseDocFrameMsg,
   encodeSetTransform,
   encodeSetPage,
+  // WHITEBOARD host→frame encoders (sit beside the doc encoders; same report bridge).
+  encodeWbAdd,
+  encodeWbDel,
+  encodeWbWipe,
+  encodeWbSet,
+  encodeRequestCapture,
+  // The shared frame head + transform/gesture/report preamble — exported so
+  // whiteboardHtml reuses them VERBATIM (not for general consumption).
+  frameHead,
+  runtimePreamble,
   DOC_CDN_LIBS,
   DOC_FRAME_MSG_PREFIX,
   DOC_PDFJS_VERSION,
   DOC_EPUBJS_VERSION,
   DOC_JSZIP_VERSION,
 } from './streaming/docHtml';
+// THE ONE SHARED WHITEBOARD RENDERER (HTML) — a self-contained <svg> board hosted in
+// the SAME WebView frame as the doc engine; reuses docHtml's transform/gesture/report
+// engine VERBATIM (personal-streamer pan/zoom/takeover for free) + a content-only
+// screenshot. Strokes ride the shared `overlay` topic, not a private data plane.
+export type { BuildWhiteboardHtmlOptions } from './streaming/whiteboardHtml';
+export { buildWhiteboardHtml } from './streaming/whiteboardHtml';
 // Doc-viewer local takeover + resync state machine (scene changes absolute;
 // doc-source changes deferrable during takeover). Web + mobile share it.
 export type {

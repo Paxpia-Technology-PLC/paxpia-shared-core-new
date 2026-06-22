@@ -2,6 +2,7 @@ export * from './types';
 export * from './lifecycle';
 export * from './wire';
 export * from './svg';
+export * from './whiteboard';
 export * from './svgSanitize';
 export * from './svgAnimate';
 export * from './svgClock';

@@ -35,6 +35,7 @@
 // mobile WebView) owns the wiring; this only describes the document.
 
 import type { DocViewMode } from './live';
+import type { WbStroke } from '../overlays/whiteboard';
 
 /** The pinned doc-engine builds. ONE version everywhere (was pdfjs 4.10 web / 3.11
  *  mobile). Legacy UMD builds so they run in an <iframe> AND on the fleet's older
@@ -77,7 +78,9 @@ export interface DocFrameTransform {
   panY: number;
 }
 
-/** A decoded frame→host event. */
+/** A decoded frame→host event. Shared by the doc engine AND the whiteboard engine
+ *  (streaming/whiteboardHtml.ts) — both render through the SAME frame, so the report
+ *  bridge + parser are common. The `wb.draw` / `capture` arms are whiteboard-only. */
 export type DocFrameReport =
   | { e: 'ready' }
   | { e: 'pages'; n: number }
@@ -86,6 +89,11 @@ export type DocFrameReport =
   // A LOCAL in-frame gesture produced this transform → the shell records it as the
   // viewport and (on a viewer) flips to local takeover (the personal-streamer focus).
   | { e: 'tf'; s: number; x: number; y: number }
+  // WHITEBOARD (editable/author mode): a finished local stroke to broadcast upstream.
+  | { e: 'wb.draw'; stroke: WbStroke }
+  // WHITEBOARD: a content-only screenshot result (base64 PNG data url), chrome-free by
+  // construction (chrome lives OUTSIDE the frame). Reply to a host {t:'capture'}.
+  | { e: 'capture'; dataUrl: string }
   | { e: 'fps'; v: number; mode?: string }
   | { e: 'err'; m: string };
 
@@ -108,6 +116,30 @@ export function encodeSetTransform(t: DocFrameTransform): string {
 /** Encode a host→frame set-page (0-based) message. */
 export function encodeSetPage(page0: number): string {
   return JSON.stringify({ t: 'pg', n: Math.max(0, Math.floor(page0)) });
+}
+
+// ── WHITEBOARD host→frame encoders (sit beside encodeSetTransform; the whiteboard
+//    frame from streaming/whiteboardHtml.ts decodes them in its __onHost intake) ──
+
+/** Append one stroke to the live whiteboard DOM (native composite, no RN re-render). */
+export function encodeWbAdd(stroke: WbStroke): string {
+  return JSON.stringify({ t: 'wb.add', stroke });
+}
+/** Remove one stroke from the whiteboard by id. */
+export function encodeWbDel(id: string): string {
+  return JSON.stringify({ t: 'wb.del', id });
+}
+/** Clear the whiteboard. */
+export function encodeWbWipe(): string {
+  return JSON.stringify({ t: 'wb.wipe' });
+}
+/** Replace the whole whiteboard stroke set (a snapshot apply). */
+export function encodeWbSet(strokes: WbStroke[]): string {
+  return JSON.stringify({ t: 'wb.set', strokes });
+}
+/** Ask the frame for a content-only screenshot; it replies {e:'capture',dataUrl}. */
+export function encodeRequestCapture(): string {
+  return JSON.stringify({ t: 'capture' });
 }
 
 export interface BuildDocHtmlOptions {
@@ -136,7 +168,11 @@ export function looksLikeEpub(url: string): boolean {
 // base CSS, the report() bridge (postMessage to BOTH the RN bridge and the iframe
 // parent), a perf probe, and the host→frame message intake. Concatenated, never a
 // template literal at runtime, so the doc-engine's own code can't collide with `${}`.
-function frameHead(mode: DocViewMode): string {
+//
+// EXPORTED so streaming/whiteboardHtml.ts reuses the EXACT same frame head (and the
+// runtimePreamble transform engine below) VERBATIM — the whiteboard inherits the doc
+// personal-streamer pan/zoom/takeover model for free instead of forking the math.
+export function frameHead(mode: DocViewMode): string {
   const scrolled = mode === 'scroll';
   return (
     '<!doctype html><html><head>' +
@@ -159,7 +195,12 @@ function frameHead(mode: DocViewMode): string {
 // The shared runtime preamble: report bridge + perf probe + host→frame intake +
 // transform application. `applyTransform` is the doc-kind-agnostic CSS apply; the page
 // hook (`__onSetPage`) is filled in per kind below.
-function runtimePreamble(mode: DocViewMode): string {
+//
+// EXPORTED for streaming/whiteboardHtml.ts: it appends a small whiteboard intake/paint
+// shim AFTER this preamble (host wb.add/wb.del/wb.wipe/wb.set + capture), so the
+// transform/gesture engine, the report() bridge and `__onHost` are byte-identical to
+// the doc frame — the whiteboard gets the personal-streamer transform for free.
+export function runtimePreamble(mode: DocViewMode): string {
   const scrolled = mode === 'scroll';
   return [
     'var MODE=' + JSON.stringify(mode) + ';',
@@ -221,15 +262,20 @@ function runtimePreamble(mode: DocViewMode): string {
       '})();'
     ),
     '__onSetPage=function(n){};', // filled per kind
+    // Per-kind host-message hook (default no-op). The doc frame leaves it; the whiteboard
+    // frame (whiteboardHtml.ts) fills it to handle wb.add/wb.del/wb.wipe/wb.set/capture —
+    // so the shared __onHost intake below NEVER forks, it just delegates unknown verbs.
+    '__onWb=function(m){};',
     // host→frame message intake (RN injects strings via document message; iframe via window message).
     'function __onHost(raw){var d=raw;try{var m=(typeof d==="string")?JSON.parse(d):d;' +
       'if(!m||!m.t)return;' +
       'if(m.t==="tf")applyTransform(m.s,m.x,m.y);' +
       'else if(m.t==="pg")__onSetPage(m.n);' +
+      'else __onWb(m);' +
       '}catch(_){}}',
     'document.addEventListener("message",function(ev){__onHost(ev.data);});', // RN (older)
     'window.addEventListener("message",function(ev){__onHost(ev.data);});', // iframe + RN (newer)
-    'var __onSetPage;',
+    'var __onSetPage,__onWb;',
   ].join('\n');
 }
 
