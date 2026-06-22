@@ -202,6 +202,28 @@ export {
   zoomByFactor,
   DOC_ARROW_PAN_FRACTION,
 } from './streaming/docViewport';
+// THE ONE SHARED DOC RENDERER (HTML) — a single self-contained pdf.js/epub.js document
+// hosted identically in an <iframe> (web) and a react-native-webview (mobile), driven by
+// a transform/control postMessage protocol so the docViewport math syncs PDF/EPUB the
+// same way it syncs images. libs parameterised (CDN now → local bundle later).
+export type {
+  DocLibSources,
+  DocFrameTransform,
+  DocFrameReport,
+  BuildDocHtmlOptions,
+} from './streaming/docHtml';
+export {
+  buildDocHtml,
+  looksLikeEpub,
+  parseDocFrameMsg,
+  encodeSetTransform,
+  encodeSetPage,
+  DOC_CDN_LIBS,
+  DOC_FRAME_MSG_PREFIX,
+  DOC_PDFJS_VERSION,
+  DOC_EPUBJS_VERSION,
+  DOC_JSZIP_VERSION,
+} from './streaming/docHtml';
 // Doc-viewer local takeover + resync state machine (scene changes absolute;
 // doc-source changes deferrable during takeover). Web + mobile share it.
 export type {

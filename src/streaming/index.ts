@@ -32,6 +32,12 @@ export * from './docRender';
 // doc/image viewer uses so wheel/pinch zoom (centred on the cursor) + arrow/drag
 // pan are identical on web (DocOverlay) and mobile (DocPdfRenderer).
 export * from './docViewport';
+// The ONE shared doc RENDERER (HTML): a single self-contained pdf.js/epub.js document
+// hosted in an <iframe> (web) AND a react-native-webview (mobile) — same engine, same
+// version, same fit. Zoom/pan/page ride a postMessage transform/control protocol so
+// the shared docViewport math drives PDF/EPUB exactly like images (sync + viewer
+// takeover for every doc kind). libs are parameterised (CDN now → local bundle later).
+export * from './docHtml';
 // The UNIFIED room-join handshake: canonical viewer Room/connect options (the
 // adaptiveStream-off churn fix, made the single source of truth), the
 // connect/reuse/defer-teardown reconciler (focus-blip vs real navigation), the
