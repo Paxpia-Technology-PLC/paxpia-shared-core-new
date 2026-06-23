@@ -225,6 +225,53 @@ const overlayChangedEv: OverlayChannelEvent = {
   eq(src.getState().rendered.sceneId, 'A', 'ingest(decodeOverlayChannelMsg(bytes)) converges the scene');
 }
 
+// ── whiteboard fold: overlay.wb.* → foldEvent → per-board WbBoardState ──────────
+{
+  const { encodeWbMsg } = await import('../src/overlays/whiteboard.ts');
+  const { boardStrokes } = await import('../src/streaming/viewer.ts');
+  const bid = 'board-1';
+  const s1 = { id: 'k1', d: 'M0 0 L10 10', color: '#fff', width: 4 };
+  const s2 = { id: 'k2', d: 'M5 5 L9 9', color: '#f00', width: 2 };
+
+  // A stroke delta decoded off the wire folds into state.boards[bid].
+  const src = createLwwSyncSource();
+  const evStroke = decodeOverlayChannelMsg(
+    encodeWbMsg({ t: 'overlay.wb.stroke', v: 1, boardId: bid, gen: 0, stroke: s1 }),
+  );
+  ok(evStroke.kind === 'overlay.wb', 'wb stroke decodes to overlay.wb');
+  src.ingest(evStroke, 1);
+  eq(boardStrokes(src.getState(), bid).strokes.length, 1, 'first stroke folds into the board (count 1)');
+
+  // A second stroke appends.
+  src.ingest(
+    decodeOverlayChannelMsg(encodeWbMsg({ t: 'overlay.wb.stroke', v: 1, boardId: bid, gen: 0, stroke: s2 })),
+    2,
+  );
+  eq(boardStrokes(src.getState(), bid).strokes.length, 2, 'second stroke appends (count 2)');
+
+  // A wipe at the next gen clears + bumps; a stale stroke at the old gen is dropped.
+  src.ingest(decodeOverlayChannelMsg(encodeWbMsg({ t: 'overlay.wb.wipe', v: 1, boardId: bid, gen: 1 })), 3);
+  eq(boardStrokes(src.getState(), bid).strokes.length, 0, 'wipe clears the board');
+  eq(boardStrokes(src.getState(), bid).gen, 1, 'wipe bumps the generation');
+  src.ingest(
+    decodeOverlayChannelMsg(encodeWbMsg({ t: 'overlay.wb.stroke', v: 1, boardId: bid, gen: 0, stroke: s1 })),
+    4,
+  );
+  eq(boardStrokes(src.getState(), bid).strokes.length, 0, 'a stale (older-gen) stroke after a wipe is dropped');
+
+  // A snapshot at the current gen REPLACES the board (late-joiner convergence).
+  src.ingest(
+    decodeOverlayChannelMsg(
+      encodeWbMsg({ t: 'overlay.wb.snapshot', v: 1, boardId: bid, gen: 1, strokes: [s1, s2] }),
+    ),
+    5,
+  );
+  eq(boardStrokes(src.getState(), bid).strokes.length, 2, 'snapshot replaces the board (late-joiner converges)');
+
+  // A second, untouched board stays empty (per-board isolation).
+  eq(boardStrokes(src.getState(), 'other').strokes.length, 0, 'an unseen board reads empty');
+}
+
 // ── report ───────────────────────────────────────────────────────────────────
 if (failures.length > 0) {
   console.error(`FAIL — ${failures.length} failed, ${passed} passed:`);

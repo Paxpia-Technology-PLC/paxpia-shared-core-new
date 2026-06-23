@@ -32,6 +32,7 @@ import {
   applyLiveSync,
   applySceneSync,
   applyOverlayChanged,
+  applyWhiteboardMsg,
 } from './viewer';
 import type { DocPresenterState, LiveScene, LiveManifest, LiveSyncMsg } from './live';
 import {
@@ -339,6 +340,8 @@ export function createLwwSyncSource(initial?: ViewerState): LwwSyncSource {
  *  • `live.sync`      → `applyLiveSync`        (doc slot + scene + manifest + presenter)
  *  • `scene.sync`     → `applySceneSync`       (FULL-REPLACE rendered layer)
  *  • `overlay.changed`→ `applyOverlayChanged`  (server-bot participation slot)
+ *  • `overlay.wb`     → `applyWhiteboardMsg`   (per-board whiteboard stroke set; the
+ *    `whiteboard` overlay derives its `strokes` from `state.boards[boardId]`)
  *  • everything else  → unchanged (results/response/control/svg/unsupported are NOT
  *    part of the converged ViewerState — votes/SVG/control fold elsewhere). */
 export function foldEvent(state: ViewerState, ev: OverlayChannelEvent): ViewerState {
@@ -349,6 +352,8 @@ export function foldEvent(state: ViewerState, ev: OverlayChannelEvent): ViewerSt
       return applySceneSync(state, ev.msg.scene);
     case 'overlay.changed':
       return applyOverlayChanged(state, ev.msg.overlay);
+    case 'overlay.wb':
+      return applyWhiteboardMsg(state, ev.msg);
     default:
       return state;
   }

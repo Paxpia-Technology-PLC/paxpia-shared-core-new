@@ -91,6 +91,8 @@ export {
   applyLiveSync,
   applyOverlayChanged,
   applySceneSync,
+  applyWhiteboardMsg,
+  boardStrokes,
   applyPreloadProgress,
   admitToLive,
   setLocalDocPresenter,

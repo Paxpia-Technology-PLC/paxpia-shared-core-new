@@ -24,6 +24,7 @@
 // path and the logged-in path are byte-for-byte the same code here.
 
 import type { OverlayInstance } from '../overlays/types';
+import { applyWb, emptyBoard, type WbBoardState, type WbMsg } from '../overlays/whiteboard';
 import {
   setSlot,
   clearAllSlots,
@@ -71,6 +72,13 @@ export interface ViewerState {
    *  loadedBytes ≥ totalBytes (or totalBytes 0) ⇒ ready to admit. */
   loadedBytes: number;
   totalBytes: number;
+  /** Live WHITEBOARD boards, keyed by boardId. The converged stroke set every front
+   *  paints from — `overlay.wb.*` deltas fold in here via `applyWb` (gen-aware), the
+   *  SAME render-brain seam doc/scene/overlay fold through, so a whiteboard overlay's
+   *  `strokes` are DERIVED from this (never a private data plane). A board appears the
+   *  first time a stroke/snapshot/wipe for its id arrives; a `whiteboard` OverlayInstance
+   *  reads its strokes by `payload.boardId`. */
+  boards: Record<string, WbBoardState>;
 }
 
 /** The initial state — entered the moment we begin connecting to the room. */
@@ -84,7 +92,26 @@ export function initialViewerState(): ViewerState {
     manifest: null,
     loadedBytes: 0,
     totalBytes: 0,
+    boards: {},
   };
+}
+
+/** Fold a decoded whiteboard delta (`overlay.wb.stroke|erase|wipe|snapshot`) into the
+ *  per-board state via the pure `applyWb` reducer (gen-aware). Returns the SAME state
+ *  ref when the board didn't change (a stale/no-op delta) so the render-brain coalesces
+ *  to zero re-renders. The board is created lazily on its first message. Pure. */
+export function applyWhiteboardMsg(state: ViewerState, msg: WbMsg): ViewerState {
+  const prevBoard = state.boards[msg.boardId] ?? emptyBoard();
+  const nextBoard = applyWb(prevBoard, msg);
+  if (nextBoard === prevBoard && state.boards[msg.boardId]) return state; // no-op fold
+  return { ...state, boards: { ...state.boards, [msg.boardId]: nextBoard } };
+}
+
+/** Read a board's converged stroke set by id (the `strokes` a `whiteboard` overlay
+ *  renders). Returns an empty board when nothing has arrived yet, so a viewer that
+ *  mounts before the first snapshot paints an empty board (then converges). Pure. */
+export function boardStrokes(state: ViewerState, boardId: string): WbBoardState {
+  return state.boards[boardId] ?? emptyBoard();
 }
 
 /** True iff a manifest describes materials that must be preloaded before admit.

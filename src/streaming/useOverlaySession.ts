@@ -41,6 +41,8 @@ import {
 import { visibleOverlays, type RenderedScene, type SceneOverlay } from './scene';
 import type { DocPresenterState, LiveManifest } from './live';
 import type { ViewerState } from './viewer';
+import { boardStrokes } from './viewer';
+import type { WbStroke } from '../overlays/whiteboard';
 import type { OverlaySyncSource } from './syncSource';
 import type { OverlayTransport, WireOutbound } from './transport';
 import {
@@ -102,6 +104,11 @@ export interface OverlaySession {
   /** True once the first live-sync snapshot has folded for this room (the gate
    *  holds the surface until this flips, so no stale page flashes). */
   firstSyncReceived: boolean;
+  /** Read a WHITEBOARD board's converged stroke set by id (the `wbStrokes` a
+   *  `whiteboard` overlay renders). The `overlay.wb.*` deltas have been folded into the
+   *  source via `applyWhiteboardMsg`; this derives the live stroke list a viewer paints.
+   *  Empty until the first stroke/snapshot for that board arrives (then converges). */
+  boardStrokes(boardId: string): WbStroke[];
 }
 
 export interface UseOverlaySessionArgs {
@@ -228,6 +235,15 @@ export function useOverlaySession(args: UseOverlaySessionArgs): OverlaySession {
   const renderOverlays = useMemo(() => visibleOverlays(vs.rendered), [vs.rendered]);
   const hasSceneSync = vs.rendered.nonce > 0 || vs.rendered.overlays.length > 0;
 
+  // WHITEBOARD: derive a board's live stroke set from the converged `boards` map (folded
+  // via applyWhiteboardMsg). Re-created whenever the boards map changes so a re-render is
+  // driven by a new stroke folding in; the lookup itself is O(1). The `whiteboard`
+  // overlay reads this by its payload.boardId to paint `wbStrokes`.
+  const getBoardStrokes = useCallback(
+    (boardId: string): WbStroke[] => boardStrokes(vs, boardId).strokes,
+    [vs],
+  );
+
   return {
     rendered: vs.rendered,
     renderOverlays,
@@ -241,6 +257,7 @@ export function useOverlaySession(args: UseOverlaySessionArgs): OverlaySession {
     view,
     manifest: vs.manifest,
     firstSyncReceived,
+    boardStrokes: getBoardStrokes,
   };
 }
 
