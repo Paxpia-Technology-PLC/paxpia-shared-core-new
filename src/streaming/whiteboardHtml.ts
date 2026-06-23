@@ -46,6 +46,20 @@ export interface BuildWhiteboardHtmlOptions {
   initialStrokes?: WbStroke[];
   /** Streamer/dash AUTHOR mode: capture pointer → emit {e:'wb.draw'}. Viewers omit it. */
   editable?: boolean;
+  /** Operator pen colour the authoring frame starts with (the chrome's active swatch). The
+   *  shell rebuilds the frame on change, so a swatch click → this default → the NEXT stroke
+   *  carries it. Defaults to white. Operator-only (a viewer frame has no pen). */
+  penColor?: string;
+  /** Operator pen width the authoring frame starts with (the chrome's active width). Same
+   *  rebuild-on-change discipline as penColor. Defaults to 4. */
+  penWidth?: number;
+  /** TRANSPARENT background (the operator's "show what's underneath" toggle): when true the
+   *  page + board background become alpha-0 so the underlying scene sources (camera/screen/
+   *  etc.) composite through, and the content-only screenshot is filled with transparent
+   *  pixels instead of the opaque ink fill. Strokes (and any backgroundUrl image) stay fully
+   *  visible either way — only the EMPTY canvas is made see-through. Default = opaque (the
+   *  shared `frameHead` ink fill). */
+  transparent?: boolean;
 }
 
 /** Build the self-contained whiteboard HTML. The single entry the platform hosts (web
@@ -54,7 +68,20 @@ export function buildWhiteboardHtml(o: BuildWhiteboardHtmlOptions): string {
   const w = o.canvas?.w && o.canvas.w > 0 ? o.canvas.w : 1000;
   const h = o.canvas?.h && o.canvas.h > 0 ? o.canvas.h : 1000;
   const editable = !!o.editable;
+  const transparent = !!o.transparent;
+  const penColor = typeof o.penColor === 'string' && o.penColor ? o.penColor : '#ffffff';
+  const penWidth = typeof o.penWidth === 'number' && o.penWidth > 0 ? o.penWidth : 4;
   const initial = Array.isArray(o.initialStrokes) ? o.initialStrokes : [];
+
+  // The transparent toggle is a thin CSS OVERRIDE appended AFTER the shared frameHead (whose
+  // `html,body{background:#0b0e16}` is the opaque default). When transparent we null out the
+  // page + stage + content fills so the host surface (and whatever scene source sits under the
+  // composited board) shows through; the strokes <g> + any backgroundUrl <image> are unaffected,
+  // so the drawing itself never goes invisible. This lives in whiteboardHtml.ts (not frameHead)
+  // so the doc engine's opaque page is untouched — only the board opts into see-through.
+  const bgOverride = transparent
+    ? '<style>html,body{background:transparent !important;}#stage,#content{background:transparent !important;}</style>'
+    : '';
 
   // The board lives inside #content (the SAME node frameHead/runtimePreamble transform).
   // An <svg> sized to the canvas coordinate space, preserveAspectRatio-fit, so the
@@ -66,6 +93,9 @@ export function buildWhiteboardHtml(o: BuildWhiteboardHtmlOptions): string {
     : '';
 
   const body = [
+    // The transparent-background override (empty unless the operator toggled it on) sits
+    // FIRST so it wins over frameHead's opaque page fill.
+    bgOverride,
     // #board fills #content; the svg's own viewBox is the canvas space.
     '<div id="stage"><div id="content">' +
       '<svg id="board" width="100%" height="100%" viewBox="0 0 ' + w + ' ' + h + '" ' +
@@ -76,7 +106,7 @@ export function buildWhiteboardHtml(o: BuildWhiteboardHtmlOptions): string {
     // The shared transform/gesture/report engine — single mode, VERBATIM from docHtml.ts.
     runtimePreamble('single'),
     // ── whiteboard config baked into first paint ──────────────────────────────
-    'var WB_W=' + w + ',WB_H=' + h + ',WB_EDIT=' + JSON.stringify(editable) + ';',
+    'var WB_W=' + w + ',WB_H=' + h + ',WB_EDIT=' + JSON.stringify(editable) + ',WB_TRANSPARENT=' + JSON.stringify(transparent) + ';',
     'var __strokes=' + safeJson(initial) + ';',
     'var SVGNS="http://www.w3.org/2000/svg";',
     'function __gel(){return document.getElementById("strokes");}',
@@ -106,7 +136,9 @@ export function buildWhiteboardHtml(o: BuildWhiteboardHtmlOptions): string {
     'function __capture(){try{var svg=document.getElementById("board");if(!svg){report({e:"err",m:"no-board"});return;}' +
       'var xml=new XMLSerializer().serializeToString(svg);' +
       'var img=new Image();var cv=document.createElement("canvas");cv.width=WB_W;cv.height=WB_H;' +
-      'img.onload=function(){try{var ctx=cv.getContext("2d");ctx.fillStyle="#0b0e16";ctx.fillRect(0,0,WB_W,WB_H);' +
+      // Opaque board → fill the ink background first; transparent board → leave the canvas
+      // cleared (alpha-0) so the PNG composites onto whatever sits under the live board.
+      'img.onload=function(){try{var ctx=cv.getContext("2d");if(!WB_TRANSPARENT){ctx.fillStyle="#0b0e16";ctx.fillRect(0,0,WB_W,WB_H);}else{ctx.clearRect(0,0,WB_W,WB_H);}' +
       'ctx.drawImage(img,0,0,WB_W,WB_H);report({e:"capture",dataUrl:cv.toDataURL("image/png")});}' +
       'catch(err){report({e:"err",m:"capture "+(err&&err.message||err)});}};' +
       'img.onerror=function(){report({e:"err",m:"capture-img"});};' +
@@ -117,7 +149,7 @@ export function buildWhiteboardHtml(o: BuildWhiteboardHtmlOptions): string {
     // every front replays it identically. We DON'T paint locally on pointerup — the host
     // echoes the stroke back via {t:'wb.add'} after it broadcasts, so author + viewers
     // share one paint path (no double-draw). A live preview path is shown while drawing.
-    WB_EDIT(editable),
+    WB_EDIT(editable, penColor, penWidth),
     // ── bake the initial snapshot (late joiner) ───────────────────────────────
     'for(var __i=0;__i<__strokes.length;__i++)__paint(__strokes[__i]);',
     'report({e:"ready"});',
@@ -132,13 +164,15 @@ export function buildWhiteboardHtml(o: BuildWhiteboardHtmlOptions): string {
 // (which broadcasts it, then echoes wb.add back so it paints). Gated behind WB_EDIT so a
 // viewer frame ships zero authoring code. When zoomed (transform owns pan), drawing is
 // suppressed in favour of pan — mirrors the doc gesture priority.
-function WB_EDIT(editable: boolean): string {
+function WB_EDIT(editable: boolean, penColor: string, penWidth: number): string {
   if (!editable) return '/* viewer mode: no authoring capture */';
   return [
     '(function(){',
     'var svg=document.getElementById("board");var cur=null,curD="",prev=document.createElementNS(SVGNS,"path");',
     'prev.setAttribute("fill","none");prev.setAttribute("stroke-linecap","round");prev.setAttribute("stroke-linejoin","round");',
-    'var COLOR="#ffffff",WIDTH=4;',
+    // Pen colour/width seed from the chrome's active swatch/width (rebuilt-on-change), and
+    // can still be live-set by the host via window.__wbSetColor/__wbSetWidth if wired.
+    'var COLOR=' + safeJson(penColor) + ',WIDTH=' + JSON.stringify(penWidth) + ';',
     'window.__wbSetColor=function(c){COLOR=c;};window.__wbSetWidth=function(w){WIDTH=w;};',
     // screen px → canvas coords via the svg CTM (accounts for the fit + the CSS transform).
     'function toCanvas(cx,cy){try{var ctm=svg.getScreenCTM();if(!ctm)return null;var pt=svg.createSVGPoint();pt.x=cx;pt.y=cy;var p=pt.matrixTransform(ctm.inverse());return {x:p.x,y:p.y};}catch(_){return null;}}',
