@@ -10,9 +10,18 @@ export async function resolve(specifier, context, nextResolve) {
   try {
     return await nextResolve(specifier, context);
   } catch (err) {
-    if (err?.code === 'ERR_MODULE_NOT_FOUND' && /^\.\.?\//.test(specifier) && !/\.[cm]?[jt]s$/.test(specifier)) {
-      const withTs = `${specifier}.ts`;
-      const resolved = await nextResolve(withTs, context);
+    // A RELATIVE extensionless specifier that didn't resolve: try `.ts` (a sibling
+    // file), then `/index.ts` (a barrel directory import like `../layout`). Some
+    // runtime modules import a package subdir by its barrel — handle both forms so a
+    // test can import real runtime code, not only type-only-cross-import leaves.
+    const relativeExtensionless = /^\.\.?\//.test(specifier) && !/\.[cm]?[jt]s$/.test(specifier);
+    if (!relativeExtensionless) throw err;
+    if (err?.code === 'ERR_MODULE_NOT_FOUND') {
+      const resolved = await nextResolve(`${specifier}.ts`, context);
+      if (existsSync(fileURLToPath(resolved.url))) return resolved;
+    }
+    if (err?.code === 'ERR_UNSUPPORTED_DIR_IMPORT') {
+      const resolved = await nextResolve(`${specifier.replace(/\/$/, '')}/index.ts`, context);
       if (existsSync(fileURLToPath(resolved.url))) return resolved;
     }
     throw err;

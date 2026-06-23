@@ -507,3 +507,25 @@ export { previewInstance } from './scheduling';
 // `FetchLike`/`FetchResponse`/`FetchRequestInit` are surfaced ALIASED
 // (`StudioConfig*`) so they don't clash with the materials seam's same-named slice.
 export * from './studio';
+// DIRECTOR (§2.1): the headless PRODUCER-DIRECTION brain `createDirectorSession` —
+// the producer counterpart to the viewer `useOverlaySession`, lifted out of
+// `Paxpia-web/src/store/live.ts` so the go-live / serve-to-slot / scene-broadcast /
+// vote-aggregation / doc-page+presenter sync lifecycle exists ONCE (web + the coming
+// mobile creator studio bind the same brain). Framework-light like `createStudioSync`
+// (no React/zustand/DOM/RN/livekit-client); orchestrates over the injected
+// `DirectorTransport`/`DirectorMedia`/`Compositor`/`MaterialsClient` seams + the
+// scenes/scheduling `StoreHandle`s. The PURE direction logic (vote-aggregate
+// reconcile, serve-to-slot target, scene snapshot/projection) is exported for tests.
+// The seam interfaces + the full session contract are reachable via the
+// `@paxpia/core/director` subpath (NOT re-exported here so the many `Director*` seam
+// names don't crowd the top-level surface; a platform binding imports the subpath).
+export {
+  createDirectorSession,
+  // Pure direction logic (unit-testable with no seams).
+  reconcileOverlayChanged,
+  reconcileResultsGen,
+  resolveOverlayServeTarget,
+  resolveDocServeTarget,
+  docForSceneSwitch,
+} from './director';
+export type { DirectorSession, DirectorState, DirectorDeps } from './director';
