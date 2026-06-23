@@ -11,7 +11,8 @@
     "./streaming": "./src/streaming/index.ts",
     "./overlays": "./src/overlays/index.ts",
     "./layout": "./src/layout/index.ts",
-    "./materials": "./src/materials/index.ts"
+    "./materials": "./src/materials/index.ts",
+    "./compositor": "./src/compositor/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

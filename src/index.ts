@@ -461,3 +461,16 @@ export * from './layout';
 // seam (MaterialsClient), so web + mobile derive fresh presigned URLs from one
 // source. The platform binds its fetch + auth token + render (pdf.js / RN).
 export * from './materials';
+// COMPOSITOR SEAM (§1.4): the platform-agnostic `Compositor` interface (+ its
+// factory/config + opaque media-handle aliases) the producer brain (§2.1) binds a
+// per-platform compositor through — like `OverlayTransport`/`LeafAdapter`. Named
+// (not `*`) so it never re-collides with the `fitToBox`/`Scene` geometry the
+// compositor barrel re-exports from `layout/` (already top-level above). The full
+// subpath `@paxpia/core/compositor` bundles the seam + that shared geometry.
+export type {
+  Compositor,
+  CompositorFactory,
+  CompositorConfig,
+  MediaSourceHandle,
+  OutputVideoTrack,
+} from './compositor';
