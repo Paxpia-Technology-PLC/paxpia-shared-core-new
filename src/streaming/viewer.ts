@@ -42,6 +42,14 @@ import {
   type RenderedScene,
   type SceneOverlay,
 } from './scene';
+import {
+  emptyViewStore,
+  putView,
+  readView,
+  docViewPersistKey,
+  type ViewStore,
+} from './persist';
+import type { PersistKey, DocViewState } from '../overlays/module';
 
 /** The viewer's lifecycle phase (see module header). */
 export type ViewerPhase = 'connecting' | 'preloading' | 'live' | 'ended';
@@ -79,6 +87,14 @@ export interface ViewerState {
    *  first time a stroke/snapshot/wipe for its id arrives; a `whiteboard` OverlayInstance
    *  reads its strokes by `payload.boardId`. */
   boards: Record<string, WbBoardState>;
+  /** PERSISTED overlay VIEW state (page + zoom/pan), keyed by `persistKey` (per
+   *  scene-item / per doc). The stable OWNER (Contract v2.1 P2) that REPLACES the
+   *  single global `docPresenter` slot a scene switch nulled (Bug 1a): a doc/board
+   *  that re-appears in a later scene re-presents its EXACT prior page+transform from
+   *  here. A SCENE/DOC/PAGE transition NEVER clears this — it only changes which key
+   *  is presented (P3). Strokes are NOT here (they live in `boards`); this owns the
+   *  transform-bearing VIEW the global presenter slot used to drop. */
+  views: ViewStore;
 }
 
 /** The initial state — entered the moment we begin connecting to the room. */
@@ -93,7 +109,24 @@ export function initialViewerState(): ViewerState {
     loadedBytes: 0,
     totalBytes: 0,
     boards: {},
+    views: emptyViewStore(),
   };
+}
+
+/** Read a persisted overlay VIEW by its `persistKey` (the doc/board page+transform
+ *  that survives scene/doc/page transitions). Empty fit-view when nothing stored yet.
+ *  Pure — the render-brain reads the presented view from here, never the global slot. */
+export function viewFor(state: ViewerState, key: PersistKey): DocViewState {
+  return readView(state.views, key);
+}
+
+/** PRESENT-not-DESTROY fold: persist a key's full VIEW into the converged store. This
+ *  is the model-level owner write — a scene/doc/page transition re-keys here, it never
+ *  clears (Invariant P3). Returns the SAME state ref on a no-op. Pure. */
+export function applyViewPersist(state: ViewerState, key: PersistKey, view: DocViewState): ViewerState {
+  const nextViews = putView(state.views, key, view);
+  if (nextViews === state.views) return state;
+  return { ...state, views: nextViews };
 }
 
 /** Fold a decoded whiteboard delta (`overlay.wb.stroke|erase|wipe|snapshot`) into the
@@ -155,6 +188,13 @@ export function applyLiveSync(state: ViewerState, msg: LiveSyncMsg): ViewerState
   // prior manifest (so a mid-stream doc-page broadcast doesn't drop the manifest).
   const manifest = msg.manifest !== undefined && msg.manifest !== null ? msg.manifest : state.manifest;
 
+  // PRESENTER PROMOTION (Contract v2.1 / 1C): persist the streamer's doc page+transform
+  // into the KEYED view store (keyed by the doc id) so it SURVIVES a scene/doc switch.
+  // This is the model-level fix for Bug 1a — the view is owned by the converged store,
+  // not the single global `docPresenter` slot a scene switch nulled. PRESENT-not-DESTROY:
+  // a null doc never CLEARS a persisted entry, it just stops presenting it.
+  const views = persistDocView(state.views, slots.activeDoc, docPresenter);
+
   if (state.phase === 'connecting') {
     if (manifestHasMaterials(manifest)) {
       return {
@@ -164,14 +204,34 @@ export function applyLiveSync(state: ViewerState, msg: LiveSyncMsg): ViewerState
         scene,
         docPresenter,
         manifest,
+        views,
         totalBytes: manifest!.totalSizeBytes,
         loadedBytes: 0,
       };
     }
-    return { ...state, phase: 'live', slots, scene, docPresenter, manifest };
+    return { ...state, phase: 'live', slots, scene, docPresenter, manifest, views };
   }
 
-  return { ...state, slots, scene, docPresenter, manifest };
+  return { ...state, slots, scene, docPresenter, manifest, views };
+}
+
+/** Persist the active doc's page+transform into the keyed view store (presenter
+ *  promotion, 1C). Keyed by the doc INSTANCE id so the entry survives a scene/doc
+ *  switch and re-presents on return. A null doc or null presenter leaves the store
+ *  untouched (PRESENT-not-DESTROY — we never clear a prior doc's persisted view).
+ *  Pure — returns the SAME store ref on a no-op. */
+function persistDocView(
+  views: ViewStore,
+  doc: LiveSlots['activeDoc'],
+  presenter: DocPresenterState | null,
+): ViewStore {
+  if (!doc || !presenter) return views;
+  const key = docViewPersistKey(doc.id);
+  const view: DocViewState = {
+    page: presenter.page,
+    transform: { zoom: presenter.zoom, panX: presenter.panX, panY: presenter.panY, page: presenter.page },
+  };
+  return putView(views, key, view);
 }
 
 /** Feed the server-bot's active participation overlay into the overlay slot. The

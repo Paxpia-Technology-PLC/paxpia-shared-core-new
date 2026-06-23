@@ -32,8 +32,9 @@ import {
   applyLiveSync,
   applySceneSync,
   applyOverlayChanged,
-  applyWhiteboardMsg,
 } from './viewer';
+import { overlayModule } from '../overlays/registry';
+import { emptyBoard } from '../overlays/whiteboard';
 import type { DocPresenterState, LiveScene, LiveManifest, LiveSyncMsg } from './live';
 import {
   LIVESYNC_WIRE_VERSION,
@@ -340,8 +341,10 @@ export function createLwwSyncSource(initial?: ViewerState): LwwSyncSource {
  *  • `live.sync`      → `applyLiveSync`        (doc slot + scene + manifest + presenter)
  *  • `scene.sync`     → `applySceneSync`       (FULL-REPLACE rendered layer)
  *  • `overlay.changed`→ `applyOverlayChanged`  (server-bot participation slot)
- *  • `overlay.wb`     → `applyWhiteboardMsg`   (per-board whiteboard stroke set; the
- *    `whiteboard` overlay derives its `strokes` from `state.boards[boardId]`)
+ *  • `overlay.wb`     → `overlayModule('whiteboard').applyRemote` per-board (the SAME
+ *    gen-aware fold `applyWb`/`applyWhiteboardMsg` ran — now EXPRESSED via the module,
+ *    so the converged stroke set is driven through the enforced contract, Contract
+ *    v2.4.2). The `whiteboard` overlay derives `strokes` from `state.boards[boardId]`.
  *  • everything else  → unchanged (results/response/control/svg/unsupported are NOT
  *    part of the converged ViewerState — votes/SVG/control fold elsewhere). */
 export function foldEvent(state: ViewerState, ev: OverlayChannelEvent): ViewerState {
@@ -353,8 +356,25 @@ export function foldEvent(state: ViewerState, ev: OverlayChannelEvent): ViewerSt
     case 'overlay.changed':
       return applyOverlayChanged(state, ev.msg.overlay);
     case 'overlay.wb':
-      return applyWhiteboardMsg(state, ev.msg);
+      return foldWhiteboardViaModule(state, ev.msg.boardId, ev.msg);
     default:
       return state;
   }
+}
+
+/** Fold one whiteboard delta into the converged per-board stroke set THROUGH the typed
+ *  whiteboard module (`overlayModule('whiteboard').applyRemote`) — the registry-driven
+ *  dispatch the contract requires, replacing the ad-hoc `applyWb` call. Manages the
+ *  per-board map (lazy create, ref-stable no-op) exactly as `applyWhiteboardMsg` did,
+ *  so behaviour is identical. Pure. */
+function foldWhiteboardViaModule(
+  state: ViewerState,
+  boardId: string,
+  msg: Parameters<ReturnType<typeof overlayModule<'whiteboard'>>['applyRemote']>[1],
+): ViewerState {
+  const wb = overlayModule('whiteboard');
+  const prevBoard = state.boards[boardId] ?? emptyBoard();
+  const nextBoard = wb.applyRemote(prevBoard, msg);
+  if (nextBoard === prevBoard && state.boards[boardId]) return state; // no-op fold
+  return { ...state, boards: { ...state.boards, [boardId]: nextBoard } };
 }

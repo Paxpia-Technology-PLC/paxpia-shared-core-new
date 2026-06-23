@@ -99,7 +99,26 @@ export {
   preloadPct,
   buildManifest,
   manifestEntry,
+  // OVERLAY VIEW PERSISTENCE (Contract v2.1 / 1C): the keyed view store reads + the
+  // present-not-destroy persist fold (the stable OWNER that survives scene/doc/page
+  // transitions — fixes Bug 1a at the model level).
+  viewFor,
+  applyViewPersist,
 } from './streaming/viewer';
+// OVERLAY VIEW-STATE PERSISTENCE STORE (Contract v2.1 — the stable OWNER): a
+// `persistKey`-keyed `{page, transform}` store that REPLACES the single global
+// `docPresenter` slot a scene switch nulled. PRESENT-not-DESTROY pure reducers + the
+// shared doc-view key derivation the converged store + the doc module agree on.
+export type { ViewStore } from './streaming/persist';
+export {
+  emptyViewStore,
+  readView,
+  hasView,
+  putView,
+  putViewPage,
+  putViewTransform,
+  docViewPersistKey,
+} from './streaming/persist';
 export type { CachedDoc, PreloadCache } from './streaming/preload';
 export {
   newPreloadCache,
