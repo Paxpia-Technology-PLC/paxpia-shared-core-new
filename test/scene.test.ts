@@ -46,6 +46,15 @@ const item = (id: string, type: LiveSceneItem['type'], z: number): LiveSceneItem
 });
 const doc = (id: string): OverlayInstance => ({ id, kind: 'doc', phase: 'active', gen: 1, payload: { title: id, pages: [], page: 0 } });
 const poll = (id: string): OverlayInstance => ({ id, kind: 'poll', phase: 'active', gen: 1, payload: { question: id, options: [] } });
+// A placed whiteboard's operator instance — identity + canvas geometry only (strokes
+// ride overlay.wb.* out-of-band). Mirrors the director's whiteboardInstanceForItem.
+const wb = (boardId: string): OverlayInstance => ({
+  id: boardId,
+  kind: 'whiteboard',
+  phase: 'active',
+  gen: 0,
+  payload: { boardId, canvas: { w: 1000, h: 1000 }, title: 'Whiteboard' },
+});
 
 const sceneA: LiveScene = {
   id: 'A',
@@ -56,6 +65,13 @@ const sceneB: LiveScene = {
   id: 'B',
   name: 'B',
   items: [item('b-doc', 'doc', 0)],
+};
+// A scene placing a WHITEBOARD tile alongside a camera — the §0.1 regression case:
+// the whiteboard item must become a first-class rendered entry (it was DROPPED before).
+const sceneWB: LiveScene = {
+  id: 'WB',
+  name: 'WB',
+  items: [item('wb-cam', 'camera', 0), item('wb-board', 'whiteboard', 1)],
 };
 
 // The viewer's "fold the bot poll into the first overlay slot" step, replicated
@@ -78,6 +94,47 @@ function foldPoll(scene: RenderedScene, overlay: OverlayInstance | null): Render
   eq(r.overlays[0].instance?.id, 'd1', 'build: doc slot filled from fillFor');
   eq(r.overlays[1].instance, null, 'build: unfilled overlay slot has instance null');
   eq(visibleOverlays(r).length, 1, 'build: only filled entries are visible');
+}
+
+// ── WHITEBOARD is a first-class placement (the §0.1 fix) ──────────────────────
+// Before the fix, buildRenderedScene `continue`d past any non-doc/overlay item, so a
+// placed whiteboard tile was SILENTLY DROPPED — the director's scene.sync carried no
+// board and a web viewer painted nothing. It must now become a kind:'whiteboard' entry.
+{
+  // (a) A whiteboard layout-item becomes a type:'whiteboard' SceneOverlay carrying the
+  //     operator's kind:'whiteboard' instance at the item's authored rect.
+  const r = buildRenderedScene(sceneWB, 1, (id, type) =>
+    type === 'whiteboard' ? wb('wb_tile_wb-board') : null,
+  );
+  eq(r.overlays.length, 1, 'wb: the whiteboard item becomes an entry (camera excluded)');
+  const board = sceneOverlayFor(r, 'wb-board');
+  eq(board?.type, 'whiteboard', 'wb: the entry is a first-class type:whiteboard slot (was DROPPED before)');
+  eq(board?.instance?.kind, 'whiteboard', 'wb: the entry carries the kind:whiteboard instance the viewer plane renders');
+  eq(board?.instance?.id, 'wb_tile_wb-board', 'wb: the entry carries the layout-stable board id');
+  eq((board?.instance?.payload as { boardId?: string }).boardId, 'wb_tile_wb-board', 'wb: payload.boardId resolves the converged stroke set');
+  eq(board?.rect, rect(0.1), 'wb: painted at the authored rect (never centered/defaulted)');
+  eq(visibleOverlays(r).length, 1, 'wb: the filled whiteboard slot is visible to the viewer');
+
+  // An empty (unfilled) whiteboard slot is still emitted (instance null) so a full
+  // replace clears a previously-filled board — and is simply not painted.
+  const empty = buildRenderedScene(sceneWB, 1, () => null);
+  eq(sceneOverlayFor(empty, 'wb-board')?.instance, null, 'wb: an unfilled whiteboard slot has instance null');
+  eq(visibleOverlays(empty).length, 0, 'wb: an unfilled whiteboard slot is not painted');
+
+  // (b) applyFullScene carries the whiteboard entry MONOTONICALLY: a viewer folding the
+  //     director's scene keeps the board; a stale (lower-nonce) snapshot can't drop it.
+  let v = emptyRenderedScene();
+  v = applyFullScene(v, r); // nonce 1: adopt the scene WITH the board
+  eq(sceneOverlayFor(v, 'wb-board')?.instance?.kind, 'whiteboard', 'wb: applyFullScene carries the whiteboard to the viewer layer');
+  // A newer director scene (nonce 2) still carrying the board is adopted (idempotent).
+  const r2 = buildRenderedScene(sceneWB, 2, (id, type) => (type === 'whiteboard' ? wb('wb_tile_wb-board') : null));
+  v = applyFullScene(v, r2);
+  eq(v.nonce, 2, 'wb: a newer-nonce scene re-carrying the board is adopted');
+  eq(sceneOverlayFor(v, 'wb-board')?.instance?.kind, 'whiteboard', 'wb: the board survives a monotonic re-broadcast');
+  // A STALE (lower-nonce) snapshot is rejected — the board is NOT regressed/dropped.
+  const stale = applyFullScene(v, r); // r.nonce=1 < v.nonce=2
+  eq(stale.nonce, 2, 'wb: a stale scene is rejected (monotonic)');
+  eq(sceneOverlayFor(stale, 'wb-board')?.instance?.kind, 'whiteboard', 'wb: a stale scene cannot drop the carried board');
 }
 
 // ── applyFullScene: REPLACE semantics + monotonic nonce ───────────────────────

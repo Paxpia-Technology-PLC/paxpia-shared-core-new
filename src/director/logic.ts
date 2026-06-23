@@ -13,11 +13,38 @@
 // PURE: no DOM/RN/livekit-client; only `@paxpia/core` siblings + plain data.
 
 import { slotForKind, type LiveScene, type LiveSceneItem } from '../streaming/live';
-import type { DocPayload, OverlayInstance } from '../overlays/types';
+import type { DocPayload, OverlayInstance, WhiteboardPayload } from '../overlays/types';
 import { isEpubEntry } from '../streaming/preload';
 import type { DeriveSceneItem } from '../streaming/prep';
 import { type OverlaySlot, resolveOverlayTarget, sceneSlots } from '../overlays/target';
+import type { SceneSlotType } from '../streaming/scene';
 import type { LayoutItemType, Scene } from '../layout/types';
+
+/** The fixed authoring/render space a placed whiteboard tile renders in (publisher
+ *  coords). Mirrors web `StudioWhiteboardTile`'s `WB_CANVAS` so the director-carried
+ *  board payload and the operator's local board agree on the canvas geometry. */
+export const WB_TILE_CANVAS = { w: 1000, h: 1000 } as const;
+
+/** The STABLE board id a placed whiteboard layout-item carries. Derived from the
+ *  layout-item id (`wb_tile_<itemId>`) so the placement (rendered scene), the strokes
+ *  (`overlay.wb.*` delta stream) and the viewer's board resolution (`payload.boardId`)
+ *  all key off ONE id. MUST match web `StudioWhiteboardTile`'s `wb_tile_${item.id}`. */
+export function wbBoardIdForItem(itemId: string): string {
+  return `wb_tile_${itemId}`;
+}
+
+/** Build the operator's `kind:'whiteboard'` OverlayInstance for a placed whiteboard
+ *  layout-item, so `buildRenderedScene` can carry it as a first-class placement in the
+ *  director's authoritative `scene.sync`. The body is just identity + canvas geometry
+ *  (the heavy strokes ride `overlay.wb.*` out-of-band, like doc pages) — mirroring web
+ *  `StudioWhiteboardTile`'s instance so web + the director agree on the same board.
+ *  `gen:0` is the INSTANCE gen (the placement); the BOARD's stroke gen lives on the
+ *  stroke wire (`WbBoardState.gen`), not here. Pure. */
+export function whiteboardInstanceForItem(item: Pick<LiveSceneItem, 'id' | 'label'>): OverlayInstance {
+  const boardId = wbBoardIdForItem(item.id);
+  const payload: WhiteboardPayload = { boardId, canvas: { ...WB_TILE_CANVAS }, title: item.label ?? 'Whiteboard' };
+  return { id: boardId, kind: 'whiteboard', phase: 'active', gen: 0, payload, results: {} };
+}
 
 /** The per-scene served-doc map (sceneId → itemId → live doc instance). */
 export type ServedDocs = Record<string, Record<string, OverlayInstance>>;
@@ -98,16 +125,22 @@ export function overlaySlotHostId(
 
 /** The `fillFor` builder `buildRenderedScene` consumes: a doc slot is filled from the
  *  per-scene served docs; the overlay-slot host is filled from the live
- *  `activeOverlay`. Mirrors web `broadcastScene`'s fill closure. Pure. */
+ *  `activeOverlay`; a WHITEBOARD slot is filled from a synthesized `kind:'whiteboard'`
+ *  instance derived from the placed item (so the director's `scene.sync` carries the
+ *  board to viewers — the §0.1 fix). Mirrors web `broadcastScene`'s fill closure. Pure. */
 export function sceneFillFor(
-  sceneId: string,
+  scene: LiveScene,
   servedDocs: ServedDocs,
   activeOverlay: OverlayInstance | null,
   overlaySlotId: string | null,
-): (itemId: string, type: 'doc' | 'overlay') => OverlayInstance | null {
-  const sceneDocs = servedDocs[sceneId] ?? {};
+): (itemId: string, type: SceneSlotType) => OverlayInstance | null {
+  const sceneDocs = servedDocs[scene.id] ?? {};
   return (itemId, type) => {
     if (type === 'doc') return sceneDocs[itemId] ?? null;
+    if (type === 'whiteboard') {
+      const it = scene.items.find((i) => i.id === itemId && i.type === 'whiteboard');
+      return it ? whiteboardInstanceForItem(it) : null;
+    }
     return overlaySlotId && itemId === overlaySlotId ? activeOverlay : null;
   };
 }

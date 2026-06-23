@@ -41,6 +41,7 @@ import {
   reconcileResultsGen,
   resolveDocServeTarget,
   resolveOverlayServeTarget,
+  sceneFillFor,
   snapshotScene,
   type ServedDocs,
 } from './logic';
@@ -204,14 +205,17 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
     set({ sceneNonce: nonce });
     // The COMPLETE overlay set for THIS scene (P0.3 full-replace). Doc slots from the
     // per-scene served-doc map; the participation slot from the live activeOverlay at
-    // the new scene's overlay rect. The FIRST overlay-type item in draw order hosts it.
+    // the new scene's overlay rect (the FIRST overlay-type item in draw order hosts it);
+    // and a placed WHITEBOARD slot from a synthesized `kind:'whiteboard'` instance so the
+    // director's AUTHORITATIVE scene.sync carries the board to viewers (the §0.1 fix —
+    // previously a whiteboard layout-item was silently dropped here).
     const activeOverlay = state.activeOverlay;
     const overlaySlotId = overlaySlotHostId(scene, activeOverlay);
-    const sceneDocs = state.servedDocs[scene.id] ?? {};
-    const rendered = buildRenderedScene(scene, nonce, (itemId, type) => {
-      if (type === 'doc') return sceneDocs[itemId] ?? null;
-      return overlaySlotId && itemId === overlaySlotId ? activeOverlay : null;
-    });
+    const rendered = buildRenderedScene(
+      scene,
+      nonce,
+      sceneFillFor(scene, state.servedDocs, activeOverlay, overlaySlotId),
+    );
     channel.publishScene(rendered);
     // ALONGSIDE the reliable in-room scene broadcast, refresh the room-listing PREP
     // manifest so a viewer who fetches the listing next sees the current shape.

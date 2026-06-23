@@ -31,6 +31,12 @@ export {
   docForSceneSwitch,
   reconcileOverlayChanged,
   reconcileResultsGen,
+  // Whiteboard placement helpers: the canonical board-id derivation + the operator's
+  // scene-carried `kind:'whiteboard'` instance, so a platform mints the SAME board id
+  // the director's scene.sync carries (web Step B/E reuse these).
+  wbBoardIdForItem,
+  whiteboardInstanceForItem,
+  WB_TILE_CANVAS,
 } from './logic';
 export type { ServedDocs, OverlayChangedDecision } from './logic';
 

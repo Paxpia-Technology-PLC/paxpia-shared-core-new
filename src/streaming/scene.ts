@@ -38,8 +38,10 @@ import type { LiveScene, LiveSceneItem } from './live';
 export interface SceneOverlay {
   /** The scene layout-item id this overlay occupies (stable render key). */
   itemId: string;
-  /** doc → the doc slot; every participation kind → an overlay slot. */
-  type: 'doc' | 'overlay';
+  /** doc → the doc slot; every participation kind → an overlay slot; whiteboard →
+   *  its OWN first-class slot (a placed board is not a doc and not a participation
+   *  overlay — it is its own placeable kind, carried to viewers by `scene.sync`). */
+  type: 'doc' | 'overlay' | 'whiteboard';
   /** The per-scene normalized rect (0..1) the producer authored for this slot.
    *  The viewer paints here verbatim — never a centered/default fallback. */
   rect: Rect;
@@ -99,29 +101,42 @@ export function sceneOverlayFor(scene: RenderedScene, itemId: string): SceneOver
 // builder flattens those into the complete set the wire carries. It is the SINGLE
 // place "scene + fills → rendered set" is computed, so producer and viewer agree.
 
-/** The doc/overlay item type a kind occupies (mirrors target.itemTypeForKind, but
- *  kept local so this module needs no overlay-target import). */
-function slotTypeForKind(kind: OverlayKind): 'doc' | 'overlay' {
-  return kind === 'doc' ? 'doc' : 'overlay';
+/** The placement slot-types a rendered scene carries: `doc`, `overlay`, and the
+ *  first-class `whiteboard` slot (a placed board paints at its own authored rect,
+ *  not in the doc or participation slot). The render key the full-replace reducer
+ *  diffs on and the `fillFor` callback keys against. */
+export type SceneSlotType = SceneOverlay['type'];
+
+/** The slot-type a kind occupies (mirrors target.itemTypeForKind, but kept local so
+ *  this module needs no overlay-target import). A `whiteboard` is its OWN slot — it
+ *  is placed, not served, so it never lands in the doc or participation slot. */
+function slotTypeForKind(kind: OverlayKind): SceneSlotType {
+  if (kind === 'doc') return 'doc';
+  if (kind === 'whiteboard') return 'whiteboard';
+  return 'overlay';
 }
 
 /** Build the COMPLETE rendered overlay set for a scene from its authored layout
  *  items + the instance (if any) filling each overlay/doc slot. `fillFor(itemId)`
  *  returns the live instance occupying that slot, or null/undefined when empty.
  *
- *  EVERY overlay/doc layout item becomes a SceneOverlay (so the viewer's full
- *  replace clears any previously-filled slot that is now empty); the rect is the
- *  item's authored per-scene rect — never defaulted. Non-overlay items (camera/
- *  screen) are excluded (they ride the composited video, not this layer). Pure. */
+ *  EVERY overlay/doc/whiteboard layout item becomes a SceneOverlay (so the viewer's
+ *  full replace clears any previously-filled slot that is now empty); the rect is the
+ *  item's authored per-scene rect — never defaulted. A `whiteboard` item is a
+ *  first-class placement: it becomes a `type:'whiteboard'` entry whose `instance` is
+ *  the operator's `kind:'whiteboard'` board (filled by `fillFor`), so the director's
+ *  authoritative `scene.sync` carries the placed board to viewers — previously a
+ *  whiteboard item was silently dropped here (the §0.1 bug). Non-overlay items
+ *  (camera/screen) are excluded (they ride the composited video, not this layer). Pure. */
 export function buildRenderedScene(
   scene: LiveScene | null,
   nonce: number,
-  fillFor: (itemId: string, type: 'doc' | 'overlay') => OverlayInstance | null | undefined,
+  fillFor: (itemId: string, type: SceneSlotType) => OverlayInstance | null | undefined,
 ): RenderedScene {
   if (!scene) return { sceneId: null, nonce, overlays: [] };
   const overlays: SceneOverlay[] = [];
   for (const it of scene.items) {
-    if (it.type !== 'doc' && it.type !== 'overlay') continue;
+    if (it.type !== 'doc' && it.type !== 'overlay' && it.type !== 'whiteboard') continue;
     const inst = fillFor(it.id, it.type) ?? null;
     overlays.push({ itemId: it.id, type: it.type, rect: it.rect, z: it.z, instance: inst });
   }

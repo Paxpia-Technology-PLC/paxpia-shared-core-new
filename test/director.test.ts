@@ -16,9 +16,14 @@ import {
   snapshotScene,
   overlaySlotHostId,
   deriveSceneItems,
+  sceneFillFor,
+  wbBoardIdForItem,
+  whiteboardInstanceForItem,
   type ServedDocs,
 } from '../src/director/logic.ts';
 import { createDirectorSession } from '../src/director/session.ts';
+import { buildRenderedScene, type RenderedScene } from '../src/streaming/scene.ts';
+import type { WhiteboardPayload } from '../src/overlays/types.ts';
 import type {
   DirectorDeps,
   DirectorMedia,
@@ -75,6 +80,13 @@ const sceneA: Scene = {
   items: [lItem('a-doc', 'doc', 0), lItem('a-ov', 'overlay', 1), lItem('a-cam', 'camera', 2)],
 };
 const sceneB: Scene = { id: 'B', name: 'B', items: [lItem('b-ov', 'overlay', 0)] };
+// Scene WB: a camera + a placed WHITEBOARD tile (the §0.1 case — the board must reach
+// the rendered scene the director broadcasts).
+const sceneWB: Scene = {
+  id: 'WB',
+  name: 'WB',
+  items: [lItem('wb-cam', 'camera', 0), { ...lItem('wb-board', 'whiteboard', 1), label: 'My Board' }],
+};
 
 // ════════════════════════════════════════════════════════════════════════════
 // 1. VOTE-AGGREGATION reconcile (the P0.2 streamer-authoritative guards)
@@ -181,6 +193,34 @@ const sceneB: Scene = { id: 'B', name: 'B', items: [lItem('b-ov', 'overlay', 0)]
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// 3b. WHITEBOARD placement fill (the §0.1 fix — board reaches the rendered scene)
+// ════════════════════════════════════════════════════════════════════════════
+{
+  // The board id is layout-stable (wb_tile_<itemId>) so placement + strokes + viewer
+  // resolution agree. MUST match web StudioWhiteboardTile's `wb_tile_${item.id}`.
+  eq(wbBoardIdForItem('wb-board'), 'wb_tile_wb-board', 'the board id is derived layout-stably from the item id');
+
+  // The operator instance carries identity + canvas geometry only (strokes ride
+  // overlay.wb.* out-of-band); title falls back to the item label.
+  const inst = whiteboardInstanceForItem({ id: 'wb-board', label: 'My Board' });
+  eq(inst.kind, 'whiteboard', 'the whiteboard instance is kind:whiteboard');
+  eq(inst.id, 'wb_tile_wb-board', 'the instance id IS the board id');
+  eq((inst.payload as WhiteboardPayload).boardId, 'wb_tile_wb-board', 'the payload boardId resolves the converged stroke set');
+  eq((inst.payload as WhiteboardPayload).canvas, { w: 1000, h: 1000 }, 'the payload carries the authoring canvas geometry');
+  eq((inst.payload as WhiteboardPayload).title, 'My Board', 'the payload title falls back to the item label');
+
+  // sceneFillFor fills a whiteboard slot from a synthesized instance; buildRenderedScene
+  // (now whiteboard-aware) carries it as a first-class entry the director broadcasts.
+  const liveWB: LiveScene = snapshotScene(sceneWB);
+  const rendered: RenderedScene = buildRenderedScene(liveWB, 1, sceneFillFor(liveWB, {}, null, null));
+  const board = rendered.overlays.find((o) => o.itemId === 'wb-board');
+  eq(board?.type, 'whiteboard', 'broadcastScene carries the whiteboard item as a first-class slot (was DROPPED before)');
+  eq(board?.instance?.kind, 'whiteboard', 'the carried slot holds the kind:whiteboard instance the viewer renders');
+  eq(board?.instance?.id, 'wb_tile_wb-board', 'the carried board uses the layout-stable id');
+  eq(rendered.overlays.some((o) => o.itemId === 'wb-cam'), false, 'the camera item rides the composited video, not this layer');
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // 4. END-TO-END drive of createDirectorSession over fake seams
 // ════════════════════════════════════════════════════════════════════════════
 {
@@ -217,6 +257,7 @@ const sceneB: Scene = { id: 'B', name: 'B', items: [lItem('b-ov', 'overlay', 0)]
     manifests: number;
     createdOverlays: OverlayInstance[];
     closed: string[];
+    lastScene: RenderedScene | null;
     fireChanged?: (o: OverlayInstance | null) => void;
     fireParticipant?: () => void;
   }
@@ -227,13 +268,14 @@ const sceneB: Scene = { id: 'B', name: 'B', items: [lItem('b-ov', 'overlay', 0)]
       manifests: 0,
       createdOverlays: [],
       closed: [],
+      lastScene: null,
       transport: undefined as never,
     };
     let changedCb: ((e: { overlay: OverlayInstance | null }) => void) | null = null;
     let participantCb: (() => void) | null = null;
     rec.transport = {
       publishLiveSync: () => void (rec.liveSyncs += 1),
-      publishScene: () => void (rec.scenes += 1),
+      publishScene: (s) => void ((rec.scenes += 1), (rec.lastScene = s)),
       publishManifest: () => void (rec.manifests += 1),
       createAndActivate: (o) => void rec.createdOverlays.push(o),
       closeOverlay: (id) => void rec.closed.push(id),
@@ -266,7 +308,7 @@ const sceneB: Scene = { id: 'B', name: 'B', items: [lItem('b-ov', 'overlay', 0)]
     };
   }
 
-  const scenesStore = makeScenesStore([sceneA, sceneB], 'A');
+  const scenesStore = makeScenesStore([sceneA, sceneB, sceneWB], 'A');
   const rec = makeTransport();
   const fakeRoom: DirectorRoomHandle = { name: 'room-1' };
   const media: DirectorMedia = {
@@ -333,6 +375,20 @@ const sceneB: Scene = { id: 'B', name: 'B', items: [lItem('b-ov', 'overlay', 0)]
   // Serving a material in scene B (no doc slot) → NO-OP.
   const noop = await session.serveMaterialToSlot({ id: 'mat-2', sizeBytes: 10, kind: 'renderable' });
   eq(noop, null, 'serving a material into a doc-slot-less scene is a no-op');
+
+  // Hot-swap to the WHITEBOARD scene → the director's broadcast scene CARRIES the placed
+  // board as a first-class kind:whiteboard entry (the §0.1 fix: a dashboard-authored
+  // whiteboard now reaches the rendered scene a viewer receives — was DROPPED before).
+  // A scene switch broadcasts in a `.finally()` after the (async) media provision, so
+  // flush the microtask queue before reading the recorded scene.
+  scenesStore.switchTo('WB');
+  await new Promise((r) => setTimeout(r, 0));
+  const wbBoard = rec.lastScene?.overlays.find((o) => o.itemId === 'wb-board');
+  eq(rec.lastScene?.sceneId, 'WB', 'a scene switch to the whiteboard scene re-broadcasts it');
+  eq(wbBoard?.type, 'whiteboard', 'the broadcast scene carries the whiteboard as a first-class slot');
+  eq(wbBoard?.instance?.kind, 'whiteboard', 'the carried slot holds the kind:whiteboard instance the web viewer renders');
+  eq(wbBoard?.instance?.id, 'wb_tile_wb-board', 'the carried board uses the layout-stable id (placement+strokes+resolution agree)');
+  ok((rec.lastScene?.nonce ?? 0) >= 1, 'the carried scene rides the director monotonic nonce (no nonce:1 race)');
 
   // An inbound bot clear with no local selection clears the participation slot. The
   // streamer holds a local selection from the earlier serve, so a clear is ignored…

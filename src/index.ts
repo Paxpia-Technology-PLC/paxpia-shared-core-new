@@ -70,7 +70,7 @@ export {
 // COMPLETE overlay set (per-scene rects + payloads) and the viewer replaces its
 // whole overlay layer (idempotent, monotonic by nonce → no remnants, no centered
 // fallback). Shared so web + mobile converge to the exact current scene.
-export type { SceneOverlay, RenderedScene, SceneSyncMsg } from './streaming/scene';
+export type { SceneOverlay, RenderedScene, SceneSyncMsg, SceneSlotType } from './streaming/scene';
 export {
   emptyRenderedScene,
   applyFullScene,
@@ -527,5 +527,11 @@ export {
   resolveOverlayServeTarget,
   resolveDocServeTarget,
   docForSceneSwitch,
+  // Whiteboard placement: the canonical board-id derivation + the operator's
+  // scene-carried `kind:'whiteboard'` instance (web reuses these so the live tile and
+  // the director's scene.sync agree on one board id — Step B/E).
+  wbBoardIdForItem,
+  whiteboardInstanceForItem,
+  WB_TILE_CANVAS,
 } from './director';
 export type { DirectorSession, DirectorState, DirectorDeps } from './director';
