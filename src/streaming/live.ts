@@ -248,10 +248,29 @@ export interface LiveSyncMsg {
   /** The presenter's pan/zoom on the active doc (so a joiner mirrors the streamer's
    *  view, not just the page). Absent ⇒ fit/no-pan default. */
   docPresenter?: DocPresenterState | null;
+  /** The WHITEBOARD presenter wire (Contract v2.3 / §8.1.4) — a DEDICATED presenter
+   *  field for a placed board's pan/zoom, kept DISTINCT from `docPresenter` so the
+   *  board's transform can ride `live.sync` WITHOUT being read as a doc presenter (and,
+   *  critically, WITHOUT being confused for the `{doc:null,scene:null}` end-wipe
+   *  sentinel — a live.sync carrying `wbPresenter` is NEVER an end-wipe, guarded in
+   *  `applyLiveSync`). Keyed by `boardId` so a viewer folds it into the board's keyed
+   *  VIEW store (`wbViewPersistKey(boardId)`), the same store a wb resync snaps to.
+   *  Absent ⇒ no board-presenter update in this snapshot. */
+  wbPresenter?: WbPresenterUpdate | null;
   /** The room's material manifest (ids + sizes + presigned URLs). Present on the
    *  go-live announce + every participant-join replay so a guest can preload +
    *  render materials. Absent ⇒ this stream has no materials (no preload gate). */
   manifest?: LiveManifest | null;
+}
+
+/** A whiteboard presenter update riding `live.sync.wbPresenter` — the streamer's
+ *  current pan/zoom on ONE placed board. Carries the `boardId` so the viewer keys it
+ *  into that board's VIEW store; the `presenter` reuses the doc presenter transform
+ *  shape (`{zoom,panX,panY,page}`) since a board's transform is the same `{scale,pan}`
+ *  a doc carries. A null `presenter` resets the board view to fit (not an end-wipe). */
+export interface WbPresenterUpdate {
+  boardId: string;
+  presenter: DocPresenterState | null;
 }
 
 /** A minimal, serializable scene snapshot ridden over the wire so viewers render

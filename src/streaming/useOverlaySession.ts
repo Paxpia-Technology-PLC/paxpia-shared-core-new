@@ -43,6 +43,8 @@ import type { DocPresenterState, LiveManifest } from './live';
 import type { ViewerState } from './viewer';
 import { boardStrokes } from './viewer';
 import type { WbStroke } from '../overlays/whiteboard';
+import { overlayModule } from '../overlays/registry';
+import { wbViewPersistKey } from './persist';
 import type { OverlaySyncSource } from './syncSource';
 import type { OverlayTransport, WireOutbound } from './transport';
 import {
@@ -109,6 +111,24 @@ export interface OverlaySession {
    *  source via `applyWhiteboardMsg`; this derives the live stroke list a viewer paints.
    *  Empty until the first stroke/snapshot for that board arrives (then converges). */
   boardStrokes(boardId: string): WbStroke[];
+  /** The streamer's synced TRANSFORM (pan/zoom) for a board — the value a FOLLOWING
+   *  viewer mirrors. Sourced from the board's keyed VIEW store (folded from the
+   *  dedicated `live.sync.wbPresenter` wire), bumped to a fresh object on resync so the
+   *  `WhiteboardOverlay` follow-effect re-snaps. Null when the board has no presenter yet
+   *  (the board fits). DECOUPLED from `docPresenter` — co-active doc+board don't share a
+   *  transform (Contract v2.3 / §8.1.4). */
+  wbPresenter(boardId: string): DocPresenterState | null;
+  /** True when THIS viewer has LOCALLY taken over the given board (its own pan/zoom).
+   *  PER-BOARD (and per-kind: distinct from `docTakenOver`) so co-active doc + whiteboard
+   *  — and two boards — never share one takeover flag (Contract §8.1.5 / task 4). */
+  wbTakenOver(boardId: string): boolean;
+  /** Enter local takeover for a board (the viewer panned/zoomed it). */
+  onWbTakeOver(boardId: string): void;
+  /** Resync a board: end its takeover + SNAP to the streamer's CURRENT transform from the
+   *  converged store (`whiteboardModule.onResync` → the board's persisted `wb:<id>` view),
+   *  NEVER a replayed desync backlog (fixes Bug 2 for the whiteboard). The follow-effect
+   *  then re-applies the snapped transform. */
+  onWbResync(boardId: string): void;
 }
 
 export interface UseOverlaySessionArgs {
@@ -230,6 +250,56 @@ export function useOverlaySession(args: UseOverlaySessionArgs): OverlaySession {
     setPresented({ doc: cur.slots.activeDoc, presenter: cur.docPresenter });
   }, [source]);
 
+  // ── WHITEBOARD takeover/resync (PER-KIND + per-board; Contract §v2.2 / task 4) ─
+  // A board's STROKES are content (always converge in `vs.boards`); only its TRANSFORM
+  // (zoom/pan) is view. Takeover is a per-board flag DISTINCT from the doc's (`docTakeover`
+  // vs `wbTakeover`), so a co-active doc + whiteboard never share one banner. During
+  // takeover the streamer's transform is INGESTED-WITHOUT-APPLY: it folds into the keyed
+  // view store (`getState()` stays current) but the `WhiteboardOverlay` follow-effect skips
+  // it (the board honours the viewer's own pan/zoom). On resync we SNAP to the board's
+  // CURRENT converged transform via `whiteboardModule.onResync` — never a replayed backlog
+  // (Bug 2). `wbResyncTick` bumps a per-board nonce so a fresh presenter OBJECT is handed to
+  // the follow-effect even when the transform value is unchanged (forcing the re-snap the
+  // value-keyed follow-effect would otherwise early-return on).
+  const [wbTakenSet, setWbTakenSet] = useState<Record<string, boolean>>({});
+  const [wbResyncTick, setWbResyncTick] = useState<Record<string, number>>({});
+
+  const onWbTakeOver = useCallback((boardId: string) => {
+    setWbTakenSet((s) => (s[boardId] ? s : { ...s, [boardId]: true }));
+  }, []);
+
+  const onWbResync = useCallback((boardId: string) => {
+    // End this board's takeover. The presenter the follow-effect reads is recomputed
+    // below from the snapped transform; the tick bump forces a fresh object so the
+    // value-keyed follow-effect always re-applies it.
+    setWbTakenSet((s) => {
+      if (!s[boardId]) return s;
+      const next = { ...s };
+      delete next[boardId];
+      return next;
+    });
+    setWbResyncTick((t) => ({ ...t, [boardId]: (t[boardId] ?? 0) + 1 }));
+  }, []);
+
+  const wbModule = useMemo(() => overlayModule('whiteboard'), []);
+  const getWbTakenOver = useCallback((boardId: string): boolean => !!wbTakenSet[boardId], [wbTakenSet]);
+  const getWbPresenter = useCallback(
+    (boardId: string): DocPresenterState | null => {
+      // SNAP target = the board's CURRENT converged transform (the `wb:<id>` view the
+      // wb-presenter wire folded). `onResync` returns the transform to snap to; we shape it
+      // into a `DocPresenterState` the shared `WhiteboardOverlay` follow-effect consumes.
+      // A null snap (no presenter yet) → fit. The resync tick is woven into the object
+      // identity so a re-snap re-applies even at an unchanged value (defeats the
+      // follow-effect's value early-return). `vs`/`wbResyncTick` drive the re-derive.
+      const snap = wbModule.onResync(vs, wbViewPersistKey(boardId));
+      void wbResyncTick[boardId];
+      if (!snap) return null;
+      const tf = snap.transform;
+      return { page: tf.page ?? 0, zoom: tf.zoom, panX: tf.panX, panY: tf.panY };
+    },
+    [wbModule, vs, wbResyncTick],
+  );
+
   // ── derive the view-model + paint list ─────────────────────────────────────
   const view = useMemo(() => deriveVoteView(vote, onVote), [vote, onVote]);
   const renderOverlays = useMemo(() => visibleOverlays(vs.rendered), [vs.rendered]);
@@ -258,6 +328,10 @@ export function useOverlaySession(args: UseOverlaySessionArgs): OverlaySession {
     manifest: vs.manifest,
     firstSyncReceived,
     boardStrokes: getBoardStrokes,
+    wbPresenter: getWbPresenter,
+    wbTakenOver: getWbTakenOver,
+    onWbTakeOver,
+    onWbResync,
   };
 }
 

@@ -31,6 +31,7 @@ export type {
   ManifestEntry,
   LiveManifest,
   DocPresenterState,
+  WbPresenterUpdate,
   DocViewMode,
 } from './streaming/live';
 export {
@@ -92,6 +93,7 @@ export {
   applyOverlayChanged,
   applySceneSync,
   applyWhiteboardMsg,
+  applyWbPresenter,
   boardStrokes,
   applyPreloadProgress,
   admitToLive,
@@ -118,6 +120,9 @@ export {
   putViewPage,
   putViewTransform,
   docViewPersistKey,
+  // NOTE: `wbViewPersistKey` ALSO lives here (next to docViewPersistKey, no import
+  // cycle) but is surfaced at the barrel via `overlays/kinds/whiteboard`'s re-export
+  // (the documented public path) — re-exporting it here too would be a duplicate.
 } from './streaming/persist';
 export type { CachedDoc, PreloadCache } from './streaming/preload';
 export {

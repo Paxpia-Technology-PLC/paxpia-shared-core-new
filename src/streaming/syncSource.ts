@@ -34,7 +34,8 @@ import {
   applyOverlayChanged,
 } from './viewer';
 import { overlayModule } from '../overlays/registry';
-import { emptyBoard } from '../overlays/whiteboard';
+import { emptyBoard, encodeWbMsg, type WbMsg } from '../overlays/whiteboard';
+import { wbViewPersistKey } from './persist';
 import type { DocPresenterState, LiveScene, LiveManifest, LiveSyncMsg } from './live';
 import {
   LIVESYNC_WIRE_VERSION,
@@ -80,6 +81,12 @@ export type LocalOverlayMutation =
   /** Re-publish / update the room material MANIFEST (ids + sizes + presigned URLs).
    *  Rides `live.sync.manifest`. */
   | { kind: 'set-manifest'; manifest: LiveManifest | null }
+  /** Broadcast a WHITEBOARD delta (stroke / erase / wipe / snapshot) for a board. The
+   *  source folds it into the SAME converged `boards` map a viewer holds (so the producer
+   *  paints from `getState()` too) and remembers the board so `onReconnect()` can replay
+   *  its current snapshot — the wb wire is owned by the sync source, NOT an ad-hoc
+   *  per-screen effect (Contract §8.1.3). */
+  | { kind: 'wb'; msg: WbMsg }
   /** End the stream — broadcast the {doc:null, scene:null} wipe sentinel. */
   | { kind: 'end-live' };
 
@@ -253,6 +260,13 @@ export class LwwSyncSource implements OverlaySyncSource {
         this.producer.manifest = m.manifest;
         return [this.broadcastLiveSync()];
       }
+      case 'wb': {
+        // Fold the operator's own whiteboard delta into LOCAL convergence (the producer
+        // paints its board from getState() too, and `onReconnect()` replays from
+        // `this.state.boards`), then return the `overlay.wb.*` wire to broadcast.
+        this.applyLocal((s) => foldEvent(s, { kind: 'overlay.wb', msg: m.msg }));
+        return [{ bytes: encodeWbMsg(m.msg), reliable: true }];
+      }
       case 'end-live': {
         // The stream-end wipe sentinel: {doc:null, scene:null}. Reset the producer
         // snapshot so a subsequent reconnect doesn't replay a dead scene.
@@ -289,6 +303,19 @@ export class LwwSyncSource implements OverlaySyncSource {
     if (this.producer.scene) replay.push(sceneSyncOutbound(this.producer.scene));
     if (this.producer.doc || this.producer.liveScene || this.producer.manifest) {
       replay.push(liveSyncOutbound(this.producer));
+    }
+    // WHITEBOARD snapshot replay folded into the ONE ReconnectPlan (Contract §4 / Task 5):
+    // for every live board the producer holds (its strokes converged in `this.state.boards`),
+    // re-broadcast the full `overlay.wb.snapshot` at its gen via the typed module's
+    // `onReconnect`, so a (re)joining/late viewer gets current board state then live deltas —
+    // unified with the doc path, NEVER an ad-hoc per-join effect. The boardId is stamped onto
+    // the snapshot here (the module recovers it from the persist key).
+    const wb = overlayModule('whiteboard');
+    for (const [boardId, board] of Object.entries(this.state.boards)) {
+      if (board.strokes.length === 0 && board.gen === 0) continue; // nothing to replay
+      // The module recovers the boardId from the `wb:<boardId>` key and stamps it on the
+      // snapshot, so the wire is already addressed to this board.
+      for (const out of wb.onReconnect(board, wbViewPersistKey(boardId))) replay.push(out);
     }
     return { requestState: true, replay };
   }

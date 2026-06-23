@@ -37,6 +37,16 @@ export function docViewPersistKey(docId: string): PersistKey {
   return brandPersistKey(`doc:${docId}`);
 }
 
+/** Derive the WHITEBOARD view persist key from a board's stable id (`wb:<boardId>`).
+ *  Lives HERE (next to `docViewPersistKey`) so the converged store's wb-presenter fold
+ *  (`applyWbPresenter`) and the whiteboard module's `persistKey`/`onResync` agree on ONE
+ *  key WITHOUT an import cycle (the module imports `viewFor` from `viewer`, and `viewer`
+ *  folds the wb-presenter — both can reach this pure key derivation in `persist`). The
+ *  board's TRANSFORM lives under this key; its STROKES live in `boards[boardId]`. P4. */
+export function wbViewPersistKey(boardId: string): PersistKey {
+  return brandPersistKey(`wb:${boardId}`);
+}
+
 /** The persisted VIEW store: `persistKey` → the doc/board VIEW state that MUST
  *  survive scene/doc/page transitions (Invariant P1). A plain record so it's trivially
  *  serializable and reads are O(1). Strokes are NOT here — they live in

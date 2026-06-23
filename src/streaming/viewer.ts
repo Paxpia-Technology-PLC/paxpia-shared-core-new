@@ -45,8 +45,10 @@ import {
 import {
   emptyViewStore,
   putView,
+  putViewTransform,
   readView,
   docViewPersistKey,
+  wbViewPersistKey,
   type ViewStore,
 } from './persist';
 import type { PersistKey, DocViewState } from '../overlays/module';
@@ -147,6 +149,27 @@ export function boardStrokes(state: ViewerState, boardId: string): WbBoardState 
   return state.boards[boardId] ?? emptyBoard();
 }
 
+/** Fold a WHITEBOARD presenter update (the streamer's pan/zoom on a board, off the
+ *  dedicated `live.sync.wbPresenter` wire) into the board's keyed VIEW store, keyed by
+ *  `wbViewPersistKey(boardId)`. This is the board's analogue of `persistDocView` — it
+ *  owns the board's TRANSFORM (view), keeping it on the SAME stable converged owner the
+ *  doc presenter promotes into, so a wb resync snaps to it (`whiteboardModule.onResync`)
+ *  and it SURVIVES a scene/doc transition (Invariant P1). A null presenter resets the
+ *  board view to fit. Returns the SAME state ref on a no-op (the store coalesces). Pure. */
+export function applyWbPresenter(
+  state: ViewerState,
+  boardId: string,
+  presenter: DocPresenterState | null,
+): ViewerState {
+  const key = wbViewPersistKey(boardId);
+  const transform = presenter
+    ? { zoom: presenter.zoom, panX: presenter.panX, panY: presenter.panY, page: presenter.page }
+    : { zoom: 1, panX: 0, panY: 0, page: 0 };
+  const nextViews = putViewTransform(state.views, key, transform);
+  if (nextViews === state.views) return state;
+  return { ...state, views: nextViews };
+}
+
 /** True iff a manifest describes materials that must be preloaded before admit.
  *  Empty/absent manifest ⇒ nothing to gate on. */
 export function manifestHasMaterials(m: LiveManifest | null | undefined): boolean {
@@ -163,7 +186,19 @@ export function manifestHasMaterials(m: LiveManifest | null | undefined): boolea
  *      (a mid-stream doc push or scene swap; we never re-gate).
  *  A null doc + null scene + null manifest is the stream-end wipe → 'ended'. */
 export function applyLiveSync(state: ViewerState, msg: LiveSyncMsg): ViewerState {
-  // Stream-end sentinel: the streamer broadcasts {doc:null, scene:null} on endLive.
+  // A live.sync carrying a WHITEBOARD presenter update (`wbPresenter`) is a board-view
+  // broadcast, NOT a doc/scene snapshot — fold it into the board's keyed VIEW store and
+  // return. This is the dedicated wb-presenter wire (Contract v2.3 / §8.1.4): it CANNOT be
+  // confused with the end-wipe (a board-presenter live.sync rides {doc:null,scene:null}
+  // but is explicitly not an end — the guard below also excludes it). The board's strokes
+  // are content (folded via `overlay.wb.*`); this owns only the board's transform VIEW.
+  if (msg.wbPresenter !== undefined && msg.wbPresenter !== null) {
+    return applyWbPresenter(state, msg.wbPresenter.boardId, msg.wbPresenter.presenter);
+  }
+
+  // Stream-end sentinel: the streamer broadcasts {doc:null, scene:null} on endLive. A
+  // live.sync carrying a `wbPresenter` is NEVER an end-wipe (it's a board-view update) —
+  // handled+returned above, so by here `wbPresenter` is absent.
   const isEndWipe =
     msg.doc === null && (msg.scene === null || msg.scene === undefined) && !manifestHasMaterials(msg.manifest);
   if (isEndWipe && state.phase !== 'connecting') {

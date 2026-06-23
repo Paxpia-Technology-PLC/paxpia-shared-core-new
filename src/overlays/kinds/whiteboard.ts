@@ -25,16 +25,14 @@ import {
   type WbStroke,
 } from '../whiteboard';
 import { viewFor } from '../../streaming/viewer';
-import { brandPersistKey } from '../module';
+import { wbViewPersistKey } from '../../streaming/persist';
 import type { OverlayModule, PersistKey, PersistCtx } from '../module';
 
-/** Derive the WHITEBOARD persist key from a board's stable id (the layout-stable
- *  `wb_tile_<itemId>` carried on `payload.boardId`). The board's STROKES live in
- *  `ViewerState.boards[boardId]`; its TRANSFORM view lives in the keyed view store
- *  under THIS key. NEVER a mount nonce (P4). Pure. */
-export function wbViewPersistKey(boardId: string): PersistKey {
-  return brandPersistKey(`wb:${boardId}`);
-}
+// `wbViewPersistKey` (the board's `wb:<boardId>` view key) lives in `streaming/persist`
+// next to `docViewPersistKey` so the converged store's wb-presenter fold and this module
+// agree on ONE key with no import cycle. Re-exported here for the module's existing
+// consumers (the web/mobile wiring imports it from the `@paxpia/core` barrel).
+export { wbViewPersistKey };
 
 /** The WHITEBOARD module. State = the converged `WbBoardState` (gen + strokes); delta
  *  = a `WbMsg` (stroke/erase/wipe/snapshot); resync snaps to the board's persisted
