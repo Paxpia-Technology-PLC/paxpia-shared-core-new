@@ -264,7 +264,9 @@ export interface LiveScene {
 }
 export interface LiveSceneItem {
   id: string;
-  type: 'camera' | 'screen' | 'overlay' | 'doc';
+  // Mirrors @paxpia/core LayoutItemType (kept inline to avoid a layout-barrel import
+  // cycle); 'whiteboard' is a first-class positionable scene source (see layout/types).
+  type: 'camera' | 'screen' | 'overlay' | 'doc' | 'whiteboard';
   rect: { x: number; y: number; w: number; h: number };
   z: number;
   fit: 'contain' | 'cover';
