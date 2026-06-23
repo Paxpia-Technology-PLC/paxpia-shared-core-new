@@ -496,3 +496,14 @@ export type {
   PreviewOverlayInstance,
 } from './scheduling';
 export { previewInstance } from './scheduling';
+// STUDIO (§1.2): the educator/streamer studio STATE MODEL + account-config SYNC,
+// lifted out of Paxpia-web so the SAME tutor config web authors can later be loaded
+// + authored by the mobile creator studio. Pure scene/assignment store reducers
+// (over the already-shared layout/target reducers) + the account-blob GET/PUT
+// coordinator (`createStudioSync`) behind two injected seams: a `StorageAdapter`
+// (localStorage ↔ MMKV cache) and a `StudioConfigClient` (a `fetch`-like + auth
+// header, mirroring `MaterialsClient`). No zustand/DOM/RN — the platform keeps a
+// thin store wrapper that delegates every transition here. The config-fetch
+// `FetchLike`/`FetchResponse`/`FetchRequestInit` are surfaced ALIASED
+// (`StudioConfig*`) so they don't clash with the materials seam's same-named slice.
+export * from './studio';
