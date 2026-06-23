@@ -455,3 +455,9 @@ export {
 // Layout: the canonical resizable/reorderable scene model (LayoutItem, Scene,
 // clampRect/moveItem/resizeItem/reorderZ/fitToBox). RN-portable; web + mobile share it.
 export * from './layout';
+// MATERIALS: the private class-materials domain (`doc` overlay pipeline v2) — the
+// RN-portable MaterialMeta/MaterialGrant model + the ONE grant/freshness path
+// (mapGrant/grantOne/buildManifestEntries/…) behind an injected platform `fetch`
+// seam (MaterialsClient), so web + mobile derive fresh presigned URLs from one
+// source. The platform binds its fetch + auth token + render (pdf.js / RN).
+export * from './materials';
