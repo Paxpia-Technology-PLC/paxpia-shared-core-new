@@ -12,6 +12,7 @@
     "./overlays": "./src/overlays/index.ts",
     "./layout": "./src/layout/index.ts",
     "./materials": "./src/materials/index.ts",
+    "./scheduling": "./src/scheduling/index.ts",
     "./compositor": "./src/compositor/index.ts"
   },
   "scripts": {

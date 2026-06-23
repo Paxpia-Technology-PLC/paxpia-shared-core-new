@@ -474,3 +474,25 @@ export type {
   MediaSourceHandle,
   OutputVideoTrack,
 } from './compositor';
+// SCHEDULING (§1.3): the SCHEDULE-as-TIMELINE class model (ordered timeline of
+// materials + inline overlays, per-class scene assignment, live-run done-flags)
+// graduated out of the web `store/studio.ts` so web + mobile share ONE scheduling
+// model (the mobile `TeachingSession` fork retires onto it). The pure REDUCERS
+// (`addScheduled`/`moveItem`/`setDone`/…) are reachable via the
+// `@paxpia/core/scheduling` subpath — NOT re-exported here because `moveItem` would
+// clash with layout's `moveItem`. Only the TYPES are surfaced at top level (the model
+// is unambiguous); a store delegates to the subpath reducers. `previewInstance`
+// (authored-overlay → static OverlayInstance) rides along.
+export type {
+  AuthoredKind,
+  AuthoredPayload,
+  DoneFlag,
+  TimelineMaterialItem,
+  TimelineOverlayItem,
+  TimelineItem,
+  TimelineOverlay,
+  ScheduledVisibility,
+  ScheduledStream,
+  PreviewOverlayInstance,
+} from './scheduling';
+export { previewInstance } from './scheduling';
