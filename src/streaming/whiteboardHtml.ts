@@ -84,22 +84,29 @@ export function buildWhiteboardHtml(o: BuildWhiteboardHtmlOptions): string {
     : '';
 
   // The board lives inside #content (the SAME node frameHead/runtimePreamble transform).
-  // An <svg> sized to the canvas coordinate space, preserveAspectRatio-fit, so the
-  // shared CSS transform pans/zooms it identically to a PDF page. Background (if any) is
-  // an <image> inside the SVG so it composites into the screenshot with no chrome.
+  // An <svg> that FILLS #content (Bug 4 fit-to-rect): instead of a fixed SQUARE viewBox
+  // letterboxed by `meet`, the viewBox is recomputed at runtime (`__fitBoard`) to the
+  // MEASURED container aspect with the WB_W×WB_H canvas centred — so the drawing surface
+  // takes up ALL the vertical+horizontal space of any rect, while strokes keep true
+  // proportions (no stretch). `crossorigin` on the background lets the capture canvas stay
+  // un-tainted for a CORS-clean bg (Bug 3). Background (if any) is an <image> inside the
+  // SVG so it composites into the screenshot with no chrome.
   const bg = o.backgroundUrl
     ? '<image id="wbbg" x="0" y="0" width="' + w + '" height="' + h +
-      '" href="' + escapeAttr(o.backgroundUrl) + '" preserveAspectRatio="xMidYMid meet"></image>'
+      '" href="' + escapeAttr(o.backgroundUrl) + '" crossorigin="anonymous" preserveAspectRatio="xMidYMid meet"></image>'
     : '';
 
   const body = [
     // The transparent-background override (empty unless the operator toggled it on) sits
     // FIRST so it wins over frameHead's opaque page fill.
     bgOverride,
-    // #board fills #content; the svg's own viewBox is the canvas space.
+    // #board fills #content; the viewBox is set to the container aspect by __fitBoard so the
+    // board fills its rect at ANY aspect (Bug 4). The initial viewBox is the bare canvas; it
+    // is replaced on ready + resize. preserveAspectRatio="none" is safe once the viewBox
+    // matches the container aspect (no distortion), and lets the fit be exact.
     '<div id="stage"><div id="content">' +
       '<svg id="board" width="100%" height="100%" viewBox="0 0 ' + w + ' ' + h + '" ' +
-      'preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">' +
+      'preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">' +
       bg + '<g id="strokes"></g></svg>' +
       '</div></div><div id="e"></div>',
     '<script>',
@@ -109,6 +116,32 @@ export function buildWhiteboardHtml(o: BuildWhiteboardHtmlOptions): string {
     'var WB_W=' + w + ',WB_H=' + h + ',WB_EDIT=' + JSON.stringify(editable) + ',WB_TRANSPARENT=' + JSON.stringify(transparent) + ';',
     'var __strokes=' + safeJson(initial) + ';',
     'var SVGNS="http://www.w3.org/2000/svg";',
+    // ── Bug 4: FILL-TO-RECT. Recompute the board's viewBox to the MEASURED container
+    // aspect with the WB_W×WB_H canvas centred, so the board fills ALL the rect (no
+    // letterbox under the controls) while strokes keep true proportions. Re-run on
+    // ready + every resize. (`__bw`/`__bh` cache the live viewBox the capture reads.)
+    'var __bw=WB_W,__bh=WB_H,__bx=0,__by=0;',
+    'function __fitBoard(){var svg=document.getElementById("board");if(!svg)return;' +
+      'var cw=__cw(),ch=__ch();if(cw<=0||ch<=0)return;var car=cw/ch,bar=WB_W/WB_H;' +
+      'var vw,vh;if(car>=bar){vw=WB_H*car;vh=WB_H;}else{vw=WB_W;vh=WB_W/car;}' +
+      'var vx=(WB_W-vw)/2,vy=(WB_H-vh)/2;__bw=vw;__bh=vh;__bx=vx;__by=vy;' +
+      'svg.setAttribute("viewBox",vx+" "+vy+" "+vw+" "+vh);}' +
+      '',
+    'window.addEventListener("resize",function(){__fitBoard();__render();});',
+    // ── Bug 5: LOSSLESS ZOOM. Override the shared __render so a zoom RE-RASTERISES the
+    // vector SVG at the zoomed device size instead of CSS-scaling a baked raster layer
+    // (which the GPU upscales → pixelation). We size #content to container*scale px so the
+    // browser re-tessellates the strokes at that resolution, and apply PAN as a translate
+    // only (no scale() → no raster upscale). __vp/__clampPan still own the gesture math —
+    // only the APPLICATION changes, so the doc/PDF path (which keeps the preamble __render)
+    // is untouched. (__render is a hoisted fn binding; reassigning it here rebinds every
+    // caller — applyTransform/__localVp — to the lossless version.)
+    '__render=function(){var c=__ensureContent();if(!c)return;var cw=__cw(),ch=__ch(),s=__vp.s||1;' +
+      'c.style.width=(cw*s)+"px";c.style.height=(ch*s)+"px";' +
+      // centre the (scaled-up) content in the stage, then pan; no CSS scale ⇒ vectors
+      // re-rasterise at the new pixel size (lossless), not a stretched bitmap.
+      'var ox=((cw-cw*s)/2)+(__vp.x||0),oy=((ch-ch*s)/2)+(__vp.y||0);' +
+      'c.style.transform="translate("+ox+"px,"+oy+"px)";};',
     'function __gel(){return document.getElementById("strokes");}',
     // append ONE stroke <path> to the LIVE svg DOM (native composite, no re-render).
     'function __paint(s){if(!s||!s.id)return;var g=__gel();if(!g)return;' +
@@ -133,16 +166,28 @@ export function buildWhiteboardHtml(o: BuildWhiteboardHtmlOptions): string {
     // ── content-only screenshot: serialise #board svg → offscreen canvas → PNG ──
     // Chrome lives OUTSIDE the frame (RN/React tree), so the frame's DOM is content-only
     // by construction — the result can't leak the resync banner / zoom buttons / chat.
+    // Bug 3 robustness: (1) capture at the LIVE viewBox aspect (not the square canvas) so
+    // it matches what's shown; (2) if `toDataURL` throws a SecurityError because a
+    // cross-origin background tainted the canvas, RETRY without the background <image> so
+    // the strokes still save — capture never hard-fails on a tainted bg.
+    'function __serialize(svg){return new XMLSerializer().serializeToString(svg);}',
+    'function __rasterize(xml,cw,ch,done,fail){var img=new Image();var cv=document.createElement("canvas");' +
+      'cv.width=Math.max(1,Math.round(cw));cv.height=Math.max(1,Math.round(ch));' +
+      'img.onload=function(){try{var ctx=cv.getContext("2d");if(!WB_TRANSPARENT){ctx.fillStyle="#0b0e16";ctx.fillRect(0,0,cv.width,cv.height);}else{ctx.clearRect(0,0,cv.width,cv.height);}' +
+      'ctx.drawImage(img,0,0,cv.width,cv.height);done(cv.toDataURL("image/png"));}' +
+      'catch(err){fail(err);}};' +
+      'img.onerror=function(){fail(new Error("capture-img"));};' +
+      'img.src="data:image/svg+xml;charset=utf-8,"+encodeURIComponent(xml);}',
     'function __capture(){try{var svg=document.getElementById("board");if(!svg){report({e:"err",m:"no-board"});return;}' +
-      'var xml=new XMLSerializer().serializeToString(svg);' +
-      'var img=new Image();var cv=document.createElement("canvas");cv.width=WB_W;cv.height=WB_H;' +
-      // Opaque board → fill the ink background first; transparent board → leave the canvas
-      // cleared (alpha-0) so the PNG composites onto whatever sits under the live board.
-      'img.onload=function(){try{var ctx=cv.getContext("2d");if(!WB_TRANSPARENT){ctx.fillStyle="#0b0e16";ctx.fillRect(0,0,WB_W,WB_H);}else{ctx.clearRect(0,0,WB_W,WB_H);}' +
-      'ctx.drawImage(img,0,0,WB_W,WB_H);report({e:"capture",dataUrl:cv.toDataURL("image/png")});}' +
-      'catch(err){report({e:"err",m:"capture "+(err&&err.message||err)});}};' +
-      'img.onerror=function(){report({e:"err",m:"capture-img"});};' +
-      'img.src="data:image/svg+xml;charset=utf-8,"+encodeURIComponent(xml);' +
+      // Render at the live viewBox aspect (Bug 4 fit), capped so a deep zoom-out can\'t make a huge bitmap.
+      'var ar=(__bw>0&&__bh>0)?(__bw/__bh):(WB_W/WB_H);var cw=WB_W,ch=Math.max(1,Math.round(WB_W/ar));' +
+      'var xml=__serialize(svg);' +
+      '__rasterize(xml,cw,ch,function(d){report({e:"capture",dataUrl:d});},function(){' +
+      // Tainted by a cross-origin bg (or bg decode failed) → drop the <image> and re-capture
+      // strokes-only so the save still works on plain-http LAN dev (Bug 3, no secure ctx needed).
+      'try{var clone=svg.cloneNode(true);var bgn=clone.querySelector("#wbbg");if(bgn&&bgn.parentNode)bgn.parentNode.removeChild(bgn);' +
+      '__rasterize(__serialize(clone),cw,ch,function(d){report({e:"capture",dataUrl:d});},function(err2){report({e:"err",m:"capture "+(err2&&err2.message||err2)});});}' +
+      'catch(err3){report({e:"err",m:"capture "+(err3&&err3.message||err3)});}});' +
       '}catch(err){report({e:"err",m:"capture "+(err&&err.message||err)});}}',
     // ── editable (author) mode: pointer → finished local stroke → {e:'wb.draw'} ──
     // Capture in CANVAS coords (svg.getScreenCTM inverse) so the d is render-agnostic and
@@ -152,6 +197,8 @@ export function buildWhiteboardHtml(o: BuildWhiteboardHtmlOptions): string {
     WB_EDIT(editable, penColor, penWidth),
     // ── bake the initial snapshot (late joiner) ───────────────────────────────
     'for(var __i=0;__i<__strokes.length;__i++)__paint(__strokes[__i]);',
+    // Fit the board to the rect (Bug 4) + apply the lossless render (Bug 5) before ready.
+    '__fitBoard();__render();',
     'report({e:"ready"});',
     '</script></body></html>',
   ].join('\n');
