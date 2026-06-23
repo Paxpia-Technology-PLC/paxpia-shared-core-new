@@ -24,10 +24,11 @@ export function defaultRect(index: number): Rect {
   return clampRect({ x: 0.06 + off, y: 0.06 + off, w: 0.4, h: 0.3 });
 }
 
-/** A default rect for an overlay/doc item — a lower band (polls) or a centered
- *  card (docs). Docs get a large centered box; overlays a lower-third band. */
+/** A default rect for an overlay/doc/whiteboard item — a lower band (polls) or a
+ *  centered card (docs/whiteboard). Docs + whiteboards get a large centered box (a
+ *  board is a content surface drawn over, like a doc); overlays a lower-third band. */
 export function defaultOverlayRect(type: LayoutItemType): Rect {
-  if (type === 'doc') return { x: 0.06, y: 0.1, w: 0.88, h: 0.6 };
+  if (type === 'doc' || type === 'whiteboard') return { x: 0.06, y: 0.1, w: 0.88, h: 0.6 };
   return { x: 0.05, y: 0.62, w: 0.9, h: 0.33 }; // poll/quiz lower band
 }
 
@@ -42,7 +43,9 @@ export function makeItem(
 ): LayoutItem {
   const rect =
     opts?.rect ??
-    (type === 'overlay' || type === 'doc' ? defaultOverlayRect(type) : defaultRect(index));
+    (type === 'overlay' || type === 'doc' || type === 'whiteboard'
+      ? defaultOverlayRect(type)
+      : defaultRect(index));
   return {
     id,
     type,
