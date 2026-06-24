@@ -11,6 +11,7 @@
     "./streaming": "./src/streaming/index.ts",
     "./overlays": "./src/overlays/index.ts",
     "./wallet": "./src/wallet/index.ts",
+    "./social": "./src/social/index.ts",
     "./layout": "./src/layout/index.ts",
     "./materials": "./src/materials/index.ts",
     "./scheduling": "./src/scheduling/index.ts",

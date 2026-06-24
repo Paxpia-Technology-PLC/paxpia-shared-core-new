@@ -84,7 +84,11 @@ export interface DocFrameTransform {
 export type DocFrameReport =
   | { e: 'ready' }
   | { e: 'pages'; n: number }
-  | { e: 'page'; n: number }
+  // `n` = the current 0-based page / EPUB section index (the synced scroll position unit).
+  // `frac` (optional) = the fine-grained within-section scroll fraction (0..1) an EPUB
+  // continuous reader reports so a producer can broadcast — and a viewer converge to — the
+  // EXACT scroll offset, not just the section. Absent for paged PDFs (page IS the position).
+  | { e: 'page'; n: number; frac?: number }
   | { e: 'interact' }
   // A LOCAL in-frame gesture produced this transform → the shell records it as the
   // viewport and (on a viewer) flips to local takeover (the personal-streamer focus).
@@ -116,6 +120,20 @@ export function encodeSetTransform(t: DocFrameTransform): string {
 /** Encode a host→frame set-page (0-based) message. */
 export function encodeSetPage(page0: number): string {
   return JSON.stringify({ t: 'pg', n: Math.max(0, Math.floor(page0)) });
+}
+
+/** Encode a host→frame SCROLL-POSITION message (§2 scroll-position sync). `pos` is the
+ *  normalized "pages-as-float" coordinate the producer broadcasts (section index + within-
+ *  section fraction, e.g. 4.5 = halfway down section 4). The EPUB scroll-mode frame splits
+ *  it back into `{i: section, f: fraction}`: it `display(section)`s then scrolls to `f` of
+ *  the section's range, so a viewer converges to the streamer's EXACT scroll offset (not
+ *  just the section). Paged PDFs ignore it (their position IS the page). Mirrors the frame's
+ *  `__onWb`/`pos` intake + the `{e:'page',n,frac}` it reports up. */
+export function encodeSetScrollPos(pos: number): string {
+  const p = Number.isFinite(pos) ? Math.max(0, pos) : 0;
+  const i = Math.floor(p);
+  const f = Math.max(0, Math.min(1, p - i));
+  return JSON.stringify({ t: 'pos', i, f });
 }
 
 // ── WHITEBOARD host→frame encoders (sit beside encodeSetTransform; the whiteboard
@@ -172,8 +190,19 @@ export function looksLikeEpub(url: string): boolean {
 // EXPORTED so streaming/whiteboardHtml.ts reuses the EXACT same frame head (and the
 // runtimePreamble transform engine below) VERBATIM — the whiteboard inherits the doc
 // personal-streamer pan/zoom/takeover model for free instead of forking the math.
-export function frameHead(mode: DocViewMode): string {
+//
+// `transparent` (BUG 2 — annotation whiteboard-over-doc): when true the frame is born
+// SEE-THROUGH at the SOURCE — `html`,`body`,`#stage`,`#content` all paint `transparent`
+// (with `color-scheme:dark` so the browser doesn't impose its own white backdrop on the
+// iframe document). This replaces the old approach of a body-level `!important` override
+// fighting an already-emitted opaque head rule (which "barely addressed it"); now the
+// opaque rule is never emitted for a transparent frame, so the doc underneath shows
+// THROUGH with no specificity race. Docs (PDF/EPUB) always pass false (opaque, unchanged).
+export function frameHead(mode: DocViewMode, transparent = false): string {
   const scrolled = mode === 'scroll';
+  // The page fill: opaque ink for docs / a normal board; fully transparent for an
+  // annotation board so the underlying scene/doc composites through every layer.
+  const pageBg = transparent ? 'transparent' : '#0b0e16';
   return (
     '<!doctype html><html><head>' +
     '<meta charset="utf-8">' +
@@ -181,12 +210,17 @@ export function frameHead(mode: DocViewMode): string {
     // gesture layer is the single source of truth (web↔mobile parity).
     '<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">' +
     '<style>' +
-    'html,body{margin:0;padding:0;background:#0b0e16;color:#e8e8ef;}' +
+    // color-scheme:dark stops the browser painting a default WHITE iframe backdrop behind a
+    // transparent document (the subtle bit that made prior transparency attempts still show
+    // white). Harmless for the opaque frame.
+    ':root{color-scheme:dark;}' +
+    'html,body{margin:0;padding:0;background:' + pageBg + ';color:#e8e8ef;}' +
     'html,body{height:' + (scrolled ? 'auto' : '100%') + ';overflow:' + (scrolled ? 'auto' : 'hidden') + ';}' +
-    // #stage = the fixed viewport (single mode). #content = the transformed layer.
-    '#stage{position:' + (scrolled ? 'static' : 'fixed') + ';inset:0;overflow:hidden;}' +
-    '#content{transform-origin:center center;will-change:transform;width:100%;' + (scrolled ? '' : 'height:100%;') + '}' +
-    '.pg{display:block;width:100%;margin:0 auto ' + (scrolled ? '8px' : '0') + ';background:#0b0e16;}' +
+    // #stage = the fixed viewport (single mode). #content = the transformed layer. Both are
+    // explicitly transparent for an annotation board so nothing opaque sits over the doc.
+    '#stage{position:' + (scrolled ? 'static' : 'fixed') + ';inset:0;overflow:hidden;background:transparent;}' +
+    '#content{transform-origin:center center;will-change:transform;width:100%;' + (scrolled ? '' : 'height:100%;') + 'background:transparent;}' +
+    '.pg{display:block;width:100%;margin:0 auto ' + (scrolled ? '8px' : '0') + ';background:' + pageBg + ';}' +
     '#e{position:fixed;inset:0;display:none;align-items:center;justify-content:center;color:#9aa;font:13px sans-serif;padding:16px;text-align:center;}' +
     '</style></head><body>'
   );
@@ -333,21 +367,43 @@ function buildEpubHtml(o: BuildDocHtmlOptions): string {
     // EPUB fills the viewport in BOTH modes; epub.js owns the scroll (paginated = one
     // page; CONTINUOUS = the whole book in ONE scroller — fixes "scroll stuck on one
     // chapter"). Override frameHead's pdf-oriented scroll so the body never double-scrolls.
-    '<style>html,body{height:100%;overflow:hidden;}#stage{position:fixed;inset:0;overflow:hidden;}#content{height:100%;}#area{height:100%;}</style>',
-    '<div id="stage"><div id="content"><div id="area"></div></div></div><div id="e"></div>',
+    // SUPPRESS TEXT SELECTION (drag-to-scroll must not start a selection) + HIDE the native
+    // scrollbar (the non-intrusive overlay bar replaces it; no layout shift / double bar).
+    '<style>html,body{height:100%;overflow:hidden;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;}' +
+      '#stage{position:fixed;inset:0;overflow:hidden;}#content{height:100%;}#area{height:100%;user-select:none;}' +
+      '#area,#area *{scrollbar-width:none;-ms-overflow-style:none;}#area::-webkit-scrollbar,#area *::-webkit-scrollbar{width:0;height:0;display:none;}' +
+      (scrolled ? '#area{cursor:grab;}#area.dragging{cursor:grabbing;}' : '') +
+      '#sb{position:fixed;top:2px;right:2px;bottom:2px;width:4px;border-radius:4px;pointer-events:none;z-index:9;opacity:0;transition:opacity .25s;}#sb.on{opacity:1;}' +
+      '#sbt{position:absolute;left:0;right:0;border-radius:4px;background:rgba(255,255,255,0.32);min-height:24px;}</style>',
+    '<div id="stage"><div id="content"><div id="area"></div></div></div><div id="sb"><div id="sbt"></div></div><div id="e"></div>',
     '<script src="' + libs.jszip + '"></script>',
     '<script src="' + libs.epubjs + '"></script>',
     '<script>',
     runtimePreamble(mode),
-    'var __book=null,__rend=null,__total=0;',
-    '__onSetPage=function(n0){if(!__rend||!__book)return;try{var spine=__book.spine;if(spine&&spine.get){var it=spine.get(n0|0);if(it)__rend.display(it.href);}}catch(_){}};',
+    'var __book=null,__rend=null,__total=0,__lastIdx=0,SCROLLED=' + (scrolled ? 'true' : 'false') + ';',
+    '__onSetPage=function(n0){if(!__rend||!__book)return;try{var spine=__book.spine;if(spine&&spine.get){var it=spine.get(n0|0);if(it){__lastIdx=n0|0;__rend.display(it.href);}}}catch(_){}};',
     'if(!window.ePub){showErr("Could not load EPUB engine");report({e:"err",m:"no-epub-lib"});}else{try{',
     'var book=ePub(' + JSON.stringify(o.url) + ');__book=book;',
     'var rendition=book.renderTo("area",{width:"100%",height:"100%",flow:' + (scrolled ? '"scrolled"' : '"paginated"') + ',manager:' + (scrolled ? '"continuous"' : '"default"') + ',spread:"none"});__rend=rendition;',
-    'rendition.themes.default({"body":{"background":"#0b0e16","color":"#e8e8ef","padding":"0 14px"}});',
+    // No-select also INSIDE each section iframe (epub content lives in nested iframes).
+    'rendition.themes.default({"body":{"background":"#0b0e16","color":"#e8e8ef","padding":"0 14px","user-select":"none","-webkit-user-select":"none"}});',
     'rendition.display().then(function(){report({e:"ready"});});',
-    'book.ready.then(function(){var n=(book.spine&&book.spine.length)||(book.packaging&&book.packaging.spine&&book.packaging.spine.length)||1;__total=n;report({e:"pages",n:n});}).catch(function(){showErr("Could not open EPUB");report({e:"err",m:"not-ready"});});',
-    'rendition.on("relocated",function(loc){try{report({e:"page",n:(loc&&loc.start&&loc.start.index!=null?loc.start.index:0)});}catch(_){}});',
+    'book.ready.then(function(){var n=(book.spine&&book.spine.spineItems&&book.spine.spineItems.length)||(book.spine&&book.spine.length)||(book.packaging&&book.packaging.spine&&book.packaging.spine.length)||1;__total=n;report({e:"pages",n:n});}).catch(function(){showErr("Could not open EPUB");report({e:"err",m:"not-ready"});});',
+    'rendition.on("relocated",function(loc){try{__lastIdx=(loc&&loc.start&&loc.start.index!=null?loc.start.index:0);report({e:"page",n:__lastIdx});}catch(_){}});',
+    // ── scroll-position sync + non-intrusive overlay scrollbar + drag-to-scroll (scroll mode) ──
+    'function __scroller(){var a=document.getElementById("area");if(!a)return null;var c=a.querySelector(".epub-container")||a.firstElementChild||a;if(c&&c.scrollHeight>c.clientHeight+2)return c;if(a.scrollHeight>a.clientHeight+2)return a;return c||a;}',
+    'var __sb=document.getElementById("sb"),__sbt=document.getElementById("sbt");',
+    'function __paintBar(sc){if(!SCROLLED||!sc||!__sb||!__sbt)return;var sh=sc.scrollHeight,ch=sc.clientHeight;if(sh<=ch+2){__sb.classList.remove("on");return;}__sb.classList.add("on");var th=__sb.clientHeight,thumb=Math.max(24,Math.round(th*ch/sh)),mt=th-thumb,top=Math.round((sc.scrollTop/(sh-ch))*mt);__sbt.style.height=thumb+"px";__sbt.style.top=top+"px";}',
+    'var __sr=null;function __reportPos(){__sr=null;var sc=__scroller();if(!sc)return;__paintBar(sc);var sh=sc.scrollHeight,ch=sc.clientHeight,frac=sh>ch?(sc.scrollTop/(sh-ch)):0;report({e:"page",n:__lastIdx,frac:Math.round(frac*1000)/1000});}',
+    'function __onScroll(){if(__sr)return;__sr=requestAnimationFrame(__reportPos);}',
+    'function __wireScroll(){var sc=__scroller();if(sc){sc.addEventListener("scroll",__onScroll,{passive:true});__paintBar(sc);}}',
+    'if(SCROLLED){rendition.on("rendered",function(){try{__wireScroll();}catch(_){}});var __t=0,__iv=setInterval(function(){__wireScroll();if(++__t>12)clearInterval(__iv);},400);' +
+      'var __area=document.getElementById("area"),__drag=null;' +
+      '__area.addEventListener("pointerdown",function(e){var sc=__scroller();if(!sc)return;__drag={id:e.pointerId,y:e.clientY,top:sc.scrollTop,sc:sc};__area.classList.add("dragging");try{__area.setPointerCapture(e.pointerId);}catch(_){}});' +
+      '__area.addEventListener("pointermove",function(e){if(!__drag||e.pointerId!==__drag.id)return;__drag.sc.scrollTop=__drag.top-(e.clientY-__drag.y);__onScroll();});' +
+      'function __ed(e){if(__drag&&(!e||e.pointerId===__drag.id)){__drag=null;__area.classList.remove("dragging");}}__area.addEventListener("pointerup",__ed);__area.addEventListener("pointercancel",__ed);__area.addEventListener("pointerleave",__ed);}',
+    // host pos:<i> <frac> → scroll to a synced position (scroll mode follow).
+    '__onWb=function(m){if(m&&m.t==="pos"){__lastIdx=m.i|0;try{var sp=__book.spine,it=sp&&sp.get&&sp.get(m.i|0);if(it&&__rend)__rend.display(it.href!=null?it.href:m.i);}catch(_){}setTimeout(function(){var sc=__scroller();if(sc){var sh=sc.scrollHeight,ch=sc.clientHeight;if(sh>ch)sc.scrollTop=Math.round((m.f||0)*(sh-ch));__paintBar(sc);}},120);}};',
     '}catch(err){showErr("Could not open EPUB");report({e:"err",m:"open "+(err&&err.message||err)});}}',
     '</script></body></html>',
   ].join('\n');

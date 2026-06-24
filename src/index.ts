@@ -248,6 +248,7 @@ export {
   parseDocFrameMsg,
   encodeSetTransform,
   encodeSetPage,
+  encodeSetScrollPos,
   // WHITEBOARD host→frame encoders (sit beside the doc encoders; same report bridge).
   encodeWbAdd,
   encodeWbDel,
@@ -571,3 +572,10 @@ export type { DirectorSession, DirectorState, DirectorDeps } from './director';
 // Full path also reachable via `@paxpia/core/wallet`. See
 // paxpia-docs/SHARED-LIFT-BACKLOG-2026-06-24.md §Gifting.
 export * from './wallet';
+// SOCIAL (§comments lift, 2026-06-24): the persistent, threaded VIDEO-COMMENT model
+// (BackendComment + buildCommentTree + optimisticLikeToggle + the CommentsApi transport
+// seam) lifted out of Paxpia-mobile so web gains threaded comments for the first time and
+// both clients share ONE flat→tree walk + one optimistic-like reducer. Distinct from the
+// ephemeral live CHAT (streaming/chat.ts). Full path also reachable via `@paxpia/core/social`.
+// See paxpia-docs/SHARED-LIFT-BACKLOG-2026-06-24.md §Comments.
+export * from './social';

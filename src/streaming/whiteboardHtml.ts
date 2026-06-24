@@ -79,14 +79,15 @@ export function buildWhiteboardHtml(o: BuildWhiteboardHtmlOptions): string {
   const penWidth = typeof o.penWidth === 'number' && o.penWidth > 0 ? o.penWidth : 4;
   const initial = Array.isArray(o.initialStrokes) ? o.initialStrokes : [];
 
-  // The transparent toggle is a thin CSS OVERRIDE appended AFTER the shared frameHead (whose
-  // `html,body{background:#0b0e16}` is the opaque default). When transparent we null out the
-  // page + stage + content fills so the host surface (and whatever scene source sits under the
-  // composited board) shows through; the strokes <g> + any backgroundUrl <image> are unaffected,
-  // so the drawing itself never goes invisible. This lives in whiteboardHtml.ts (not frameHead)
-  // so the doc engine's opaque page is untouched — only the board opts into see-through.
+  // BUG 2 (annotation whiteboard-over-doc shows a SOLID white bg covering the doc):
+  // transparency is now driven AT THE SOURCE by `frameHead(mode, transparent)` — the opaque
+  // `html,body{background:#0b0e16}` rule is NEVER emitted for a transparent board, so there's
+  // no specificity race to lose. This `bgOverride` stays as a BELT-AND-BRACES `!important`
+  // override (covers `#board` + any UA/quirk default) and is the ONE place we also force the
+  // <svg> board itself transparent. Empty for an opaque board (the frameHead ink fill stands).
   const bgOverride = transparent
-    ? '<style>html,body{background:transparent !important;}#stage,#content{background:transparent !important;}</style>'
+    ? '<style>html,body,#stage,#content,#board{background:transparent !important;background-color:transparent !important;}' +
+      'html{color-scheme:dark;}</style>'
     : '';
 
   // The board lives inside #content (the SAME node frameHead/runtimePreamble transform).
@@ -112,6 +113,11 @@ export function buildWhiteboardHtml(o: BuildWhiteboardHtmlOptions): string {
     // matches the container aspect (no distortion), and lets the fit be exact.
     '<div id="stage"><div id="content">' +
       '<svg id="board" width="100%" height="100%" viewBox="0 0 ' + w + ' ' + h + '" ' +
+      // INLINE transparent background on the SVG ROOT (BUG 2 belt-and-braces): some WebView /
+      // UA quirks ignore an `!important` CSS rule on an <svg> root, so for a transparent
+      // annotation board we ALSO set it inline (highest specificity). Opaque board: no style
+      // (the frameHead ink page paints behind it). The doc must show THROUGH every layer.
+      (transparent ? 'style="background:transparent" ' : '') +
       'preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">' +
       bg + '<g id="strokes"></g></svg>' +
       '</div></div><div id="e"></div>',
@@ -209,7 +215,9 @@ export function buildWhiteboardHtml(o: BuildWhiteboardHtmlOptions): string {
     '</script></body></html>',
   ].join('\n');
 
-  return frameHead('single') + body;
+  // Pass `transparent` so the frame is born see-through at the SOURCE (BUG 2) — the opaque
+  // ink page is never emitted for an annotation board, so the doc shows through.
+  return frameHead('single', transparent) + body;
 }
 
 // The editable-author capture shim, emitted only when editable. Pointer down/move builds
