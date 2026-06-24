@@ -233,7 +233,13 @@ function WB_EDIT(editable: boolean, penColor: string, penWidth: number, alwaysDr
     'function fmt(n){return Math.round(n*100)/100;}',
     // Draw-when-fit / pan-when-zoomed for the placed board; ALWAYS draw for an annotation
     // (the doc owns zoom, so a stroke must start regardless of the annotation\'s scale).
-    'svg.addEventListener("pointerdown",function(e){if(!ALWAYS_DRAW&&__vp.s>1.01)return;var p=toCanvas(e.clientX,e.clientY);if(!p)return;cur=e.pointerId;curD="M"+fmt(p.x)+" "+fmt(p.y);prev.setAttribute("d",curD);prev.setAttribute("stroke",COLOR);prev.setAttribute("stroke-width",String(WIDTH));__gel().appendChild(prev);},{passive:true});',
+    // DRAW-vs-PAN (#bug): once we commit to a stroke, OWN the gesture — stopPropagation
+    // so the SHARED preamble's document-level pan handler (which grabs on pointerdown when
+    // __vp.s>1) does NOT also fire and translate the content. Without this, a draw while
+    // zoomed in DRAW mode both drew AND panned (pan dominated → "draw just pans"). The
+    // guard above already lets a pan through when NOT drawing (zoomed placed-board nav), so
+    // pan-when-intended still works; we only seize the pointer when a stroke actually starts.
+    'svg.addEventListener("pointerdown",function(e){if(!ALWAYS_DRAW&&__vp.s>1.01)return;var p=toCanvas(e.clientX,e.clientY);if(!p)return;e.stopPropagation();cur=e.pointerId;curD="M"+fmt(p.x)+" "+fmt(p.y);prev.setAttribute("d",curD);prev.setAttribute("stroke",COLOR);prev.setAttribute("stroke-width",String(WIDTH));__gel().appendChild(prev);},{passive:true});',
     'svg.addEventListener("pointermove",function(e){if(cur===null||e.pointerId!==cur)return;var p=toCanvas(e.clientX,e.clientY);if(!p)return;curD+=" L"+fmt(p.x)+" "+fmt(p.y);prev.setAttribute("d",curD);},{passive:true});',
     'function finish(){if(cur===null)return;cur=null;try{if(prev.parentNode)prev.parentNode.removeChild(prev);}catch(_){}if(curD.indexOf("L")<0){curD="";return;}var stroke={id:"s"+Date.now()+"_"+Math.floor(Math.random()*1e6),d:curD,color:COLOR,width:WIDTH};curD="";report({e:"wb.draw",stroke:stroke});}',
     'svg.addEventListener("pointerup",finish,{passive:true});',
