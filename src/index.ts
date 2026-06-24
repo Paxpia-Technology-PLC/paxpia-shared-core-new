@@ -579,3 +579,13 @@ export * from './wallet';
 // ephemeral live CHAT (streaming/chat.ts). Full path also reachable via `@paxpia/core/social`.
 // See paxpia-docs/SHARED-LIFT-BACKLOG-2026-06-24.md §Comments.
 export * from './social';
+// ANALYTICS (WS5 / D6, 2026-06-24): the impression-metric DOMAIN — trust-tier enums,
+// impression event-type union, time-bucket/series shapes, the TrustMix + ImpressionMetrics
+// aggregate, the creator-analytics read-API wire shapes (CreatorOverview/VideoMetrics/
+// LiveMetrics), and the PURE aggregation helpers (bucketByMinute/trustMix/botPct/
+// mergeSeries). Platform-free + JSON-serializable; shared by Paxpia-web (creator analytics),
+// Paxpia-admin (monitoring), and mirrored by the Go read API. The recharts components that
+// RENDER these are web-only and live in @paxpia/ui/charts (never imported by mobile). No
+// name clashes with existing exports, so re-exported at the top level; full path also
+// reachable via `@paxpia/core/analytics`. See paxpia-docs/impressions-tokens-ip-2026-06-24.md.
+export * from './analytics';
