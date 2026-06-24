@@ -257,8 +257,11 @@ export function runtimePreamble(mode: DocViewMode): string {
       // touch pinch (two fingers): scale about the midpoint.
       'document.addEventListener("touchmove",function(e){if(e.touches&&e.touches.length===2){var a=e.touches[0],b=e.touches[1];var d=Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY);var mx=(a.clientX+b.clientX)/2,my=(a.clientY+b.clientY)/2;if(pinch){__zoomAt(__vp.s*(d/pinch.d),mx,my);}pinch={d:d};}},{passive:true});' +
       'document.addEventListener("touchend",function(e){if(!e.touches||e.touches.length<2)pinch=null;},{passive:true});' +
-      // trackpad/ctrl-wheel zoom (web parity).
-      'document.addEventListener("wheel",function(e){if(e.ctrlKey){e.preventDefault();__zoomAt(__vp.s*Math.exp(-e.deltaY*0.0015),e.clientX,e.clientY);}},{passive:false});' +
+      // WHEEL = ZOOM, CAPTURED (R5). In single/nav mode a wheel inside the frame zooms about
+      // the pointer and is preventDefault-ed so it NEVER propagates out to scroll the host
+      // page. (Was ctrl-wheel only, which let a plain wheel bubble/scroll the page.) Scroll
+      // mode keeps native scroll (this block is single-mode only).
+      'document.addEventListener("wheel",function(e){e.preventDefault();e.stopPropagation();__zoomAt(__vp.s*Math.exp(-e.deltaY*0.0015),e.clientX,e.clientY);},{passive:false});' +
       '})();'
     ),
     '__onSetPage=function(n){};', // filled per kind

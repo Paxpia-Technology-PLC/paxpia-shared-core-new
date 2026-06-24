@@ -32,6 +32,7 @@ import {
   applyLiveSync,
   applySceneSync,
   applyOverlayChanged,
+  applyGiftMsg,
 } from './viewer';
 import { overlayModule } from '../overlays/registry';
 import { emptyBoard, encodeWbMsg, type WbMsg } from '../overlays/whiteboard';
@@ -372,6 +373,8 @@ export function createLwwSyncSource(initial?: ViewerState): LwwSyncSource {
  *    gen-aware fold `applyWb`/`applyWhiteboardMsg` ran — now EXPRESSED via the module,
  *    so the converged stroke set is driven through the enforced contract, Contract
  *    v2.4.2). The `whiteboard` overlay derives `strokes` from `state.boards[boardId]`.
+ *  • `overlay.gift`   → `applyGiftMsg` (via `overlayModule('gift').applyRemote`): append
+ *    one toast to the converged append-only feed (`state.gifts`), id-deduped + capped.
  *  • everything else  → unchanged (results/response/control/svg/unsupported are NOT
  *    part of the converged ViewerState — votes/SVG/control fold elsewhere). */
 export function foldEvent(state: ViewerState, ev: OverlayChannelEvent): ViewerState {
@@ -384,6 +387,8 @@ export function foldEvent(state: ViewerState, ev: OverlayChannelEvent): ViewerSt
       return applyOverlayChanged(state, ev.msg.overlay);
     case 'overlay.wb':
       return foldWhiteboardViaModule(state, ev.msg.boardId, ev.msg);
+    case 'overlay.gift':
+      return applyGiftMsg(state, ev.msg);
     default:
       return state;
   }

@@ -51,7 +51,10 @@ import {
   wbViewPersistKey,
   type ViewStore,
 } from './persist';
-import type { PersistKey, DocViewState } from '../overlays/module';
+import type { PersistKey, DocViewState, GiftDeltaMsg, GiftFeedState } from '../overlays/module';
+import { emptyGiftFeed } from '../overlays/module';
+import { overlayModule } from '../overlays/registry';
+import type { DocAnnotationState } from '../overlays/annotation';
 
 /** The viewer's lifecycle phase (see module header). */
 export type ViewerPhase = 'connecting' | 'preloading' | 'live' | 'ended';
@@ -97,6 +100,19 @@ export interface ViewerState {
    *  is presented (P3). Strokes are NOT here (they live in `boards`); this owns the
    *  transform-bearing VIEW the global presenter slot used to drop. */
   views: ViewStore;
+  /** WHITEBOARD-ON-DOC ANNOTATION presence (Message D item 2): the streamer's active
+   *  annotation descriptor for the live doc — `on` + the active `wbann:…` `boardId` +
+   *  `mode` — folded from `live.sync.docAnn`. Null ⇒ no active annotation. The viewer
+   *  renders an annotation layer over the doc ONLY when `docAnn.on`, painting
+   *  `boardStrokes(docAnn.boardId)`. A toggle-OFF arrives as `{on:false}` ⇒ the layer
+   *  HIDES while the strokes PERSIST in `boards` (P3 present-not-destroy). */
+  docAnn: DocAnnotationState | null;
+  /** The converged GIFT feed (Contract v2.4 / kinds/gift): an append-only, id-deduped,
+   *  capped ordered log of gift toasts. `overlay.gift` deltas fold in here via
+   *  `applyGiftMsg` (through the gift module, registry-driven). A fire-and-forget feed —
+   *  unlike doc/board state nothing snaps it on resync (the module's `onResync` is null),
+   *  it simply grows as toasts arrive and the UI auto-expires the oldest. */
+  gifts: GiftFeedState;
 }
 
 /** The initial state — entered the moment we begin connecting to the room. */
@@ -112,6 +128,8 @@ export function initialViewerState(): ViewerState {
     totalBytes: 0,
     boards: {},
     views: emptyViewStore(),
+    docAnn: null,
+    gifts: emptyGiftFeed(),
   };
 }
 
@@ -147,6 +165,24 @@ export function applyWhiteboardMsg(state: ViewerState, msg: WbMsg): ViewerState 
  *  mounts before the first snapshot paints an empty board (then converges). Pure. */
 export function boardStrokes(state: ViewerState, boardId: string): WbBoardState {
   return state.boards[boardId] ?? emptyBoard();
+}
+
+/** Fold one decoded gift delta (`overlay.gift`) into the converged append-only feed
+ *  THROUGH the typed gift module (`overlayModule('gift').applyRemote`) — the registry-
+ *  driven dispatch the contract requires (mirrors `foldWhiteboardViaModule`). The module
+ *  appends + dedupes by id + caps the log; an empty-sentinel / duplicate toast returns the
+ *  SAME feed ref, so a stale/duplicate packet coalesces to zero re-renders. Pure. */
+export function applyGiftMsg(state: ViewerState, msg: GiftDeltaMsg): ViewerState {
+  const gift = overlayModule('gift');
+  const nextGifts = gift.applyRemote(state.gifts, msg);
+  if (nextGifts === state.gifts) return state; // no-op fold (dup / empty sentinel)
+  return { ...state, gifts: nextGifts };
+}
+
+/** Read the converged gift feed (the toasts a `GiftOverlayLayer` renders). The most
+ *  recent toast is last; the UI caps/expires its visible window. Pure. */
+export function giftFeed(state: ViewerState): GiftFeedState {
+  return state.gifts;
 }
 
 /** Fold a WHITEBOARD presenter update (the streamer's pan/zoom on a board, off the
@@ -209,6 +245,7 @@ export function applyLiveSync(state: ViewerState, msg: LiveSyncMsg): ViewerState
       scene: null,
       rendered: emptyRenderedScene(),
       docPresenter: null,
+      docAnn: null,
     };
   }
 
@@ -219,6 +256,11 @@ export function applyLiveSync(state: ViewerState, msg: LiveSyncMsg): ViewerState
 
   const scene = msg.scene ?? state.scene;
   const docPresenter = msg.docPresenter !== undefined ? msg.docPresenter : state.docPresenter;
+  // ANNOTATION presence (Message D item 2): carry-forward when absent, replace when
+  // present (incl. explicit null = no active annotation). A null `doc` (the doc slot
+  // cleared mid-stream, NOT an end-wipe) also drops a stale annotation so a hidden doc
+  // can't leave its annotation layer behind.
+  const docAnn = msg.docAnn !== undefined ? msg.docAnn : msg.doc === null ? null : state.docAnn;
   // Manifest only meaningfully arrives populated; a snapshot without one keeps the
   // prior manifest (so a mid-stream doc-page broadcast doesn't drop the manifest).
   const manifest = msg.manifest !== undefined && msg.manifest !== null ? msg.manifest : state.manifest;
@@ -240,14 +282,15 @@ export function applyLiveSync(state: ViewerState, msg: LiveSyncMsg): ViewerState
         docPresenter,
         manifest,
         views,
+        docAnn,
         totalBytes: manifest!.totalSizeBytes,
         loadedBytes: 0,
       };
     }
-    return { ...state, phase: 'live', slots, scene, docPresenter, manifest, views };
+    return { ...state, phase: 'live', slots, scene, docPresenter, manifest, views, docAnn };
   }
 
-  return { ...state, slots, scene, docPresenter, manifest, views };
+  return { ...state, slots, scene, docPresenter, manifest, views, docAnn };
 }
 
 /** Persist the active doc's page+transform into the keyed view store (presenter

@@ -33,16 +33,38 @@ export function wbBoardIdForItem(itemId: string): string {
   return `wb_tile_${itemId}`;
 }
 
+/** A placed whiteboard's SYNCED operator settings — the view-flags that must reach every
+ *  viewer identically (not operator-local): `transparent` (alpha-0 page so the scene shows
+ *  through) + `hidden` (the operator has hidden it from viewers). Keyed by layout-item id
+ *  in the director's `wbSettings` map; folded into the synthesized payload here so they ride
+ *  `scene.sync`. */
+export interface WhiteboardItemSettings {
+  transparent?: boolean;
+  hidden?: boolean;
+}
+
 /** Build the operator's `kind:'whiteboard'` OverlayInstance for a placed whiteboard
  *  layout-item, so `buildRenderedScene` can carry it as a first-class placement in the
- *  director's authoritative `scene.sync`. The body is just identity + canvas geometry
- *  (the heavy strokes ride `overlay.wb.*` out-of-band, like doc pages) — mirroring web
- *  `StudioWhiteboardTile`'s instance so web + the director agree on the same board.
+ *  director's authoritative `scene.sync`. The body is identity + canvas geometry + the
+ *  SYNCED view-flags (`transparent`/`hidden`) so every viewer renders the SAME transparency
+ *  the operator chose (the heavy strokes ride `overlay.wb.*` out-of-band, like doc pages) —
+ *  mirroring web `StudioWhiteboardTile`'s instance so web + the director agree on the board.
  *  `gen:0` is the INSTANCE gen (the placement); the BOARD's stroke gen lives on the
  *  stroke wire (`WbBoardState.gen`), not here. Pure. */
-export function whiteboardInstanceForItem(item: Pick<LiveSceneItem, 'id' | 'label'>): OverlayInstance {
+export function whiteboardInstanceForItem(
+  item: Pick<LiveSceneItem, 'id' | 'label'>,
+  settings?: WhiteboardItemSettings,
+): OverlayInstance {
   const boardId = wbBoardIdForItem(item.id);
-  const payload: WhiteboardPayload = { boardId, canvas: { ...WB_TILE_CANVAS }, title: item.label ?? 'Whiteboard' };
+  const payload: WhiteboardPayload = {
+    boardId,
+    canvas: { ...WB_TILE_CANVAS },
+    title: item.label ?? 'Whiteboard',
+    // Explicit booleans (never undefined) so a viewer's render is deterministic off the
+    // synced payload — default opaque + visible.
+    transparent: settings?.transparent ?? false,
+    hidden: settings?.hidden ?? false,
+  };
   return { id: boardId, kind: 'whiteboard', phase: 'active', gen: 0, payload, results: {} };
 }
 
@@ -133,13 +155,23 @@ export function sceneFillFor(
   servedDocs: ServedDocs,
   activeOverlay: OverlayInstance | null,
   overlaySlotId: string | null,
+  wbSettings?: Record<string, WhiteboardItemSettings>,
 ): (itemId: string, type: SceneSlotType) => OverlayInstance | null {
   const sceneDocs = servedDocs[scene.id] ?? {};
   return (itemId, type) => {
     if (type === 'doc') return sceneDocs[itemId] ?? null;
     if (type === 'whiteboard') {
       const it = scene.items.find((i) => i.id === itemId && i.type === 'whiteboard');
-      return it ? whiteboardInstanceForItem(it) : null;
+      if (!it) return null;
+      const settings = wbSettings?.[itemId];
+      // HIDDEN (synced operator setting): DROP the board from the VIEWER's rendered set
+      // entirely ("for viewers the whole thing is gone") — the slot stays in the scene
+      // (z-order preserved) but with instance:null, so `visibleOverlays` filters it out
+      // and no viewer paints it. The operator still sees a GHOSTED copy via its own
+      // `StudioWhiteboardTile` (rendered independently of this set), and the strokes keep
+      // converging in `boards`, so un-hiding re-presents the full board with no loss.
+      if (settings?.hidden) return null;
+      return whiteboardInstanceForItem(it, settings);
     }
     return overlaySlotId && itemId === overlaySlotId ? activeOverlay : null;
   };

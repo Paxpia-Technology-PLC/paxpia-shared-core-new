@@ -31,6 +31,7 @@ import type {
   DirectorRoomHandle,
   DirectorMaterial,
   DirectorPreloadCache,
+  DirectorLiveSync,
 } from '../src/director/types.ts';
 import type { Scene } from '../src/layout/types.ts';
 import type { LiveScene } from '../src/streaming/live.ts';
@@ -258,6 +259,7 @@ const sceneWB: Scene = {
     createdOverlays: OverlayInstance[];
     closed: string[];
     lastScene: RenderedScene | null;
+    lastLiveSync: DirectorLiveSync | null;
     fireChanged?: (o: OverlayInstance | null) => void;
     fireParticipant?: () => void;
   }
@@ -269,12 +271,13 @@ const sceneWB: Scene = {
       createdOverlays: [],
       closed: [],
       lastScene: null,
+      lastLiveSync: null,
       transport: undefined as never,
     };
     let changedCb: ((e: { overlay: OverlayInstance | null }) => void) | null = null;
     let participantCb: (() => void) | null = null;
     rec.transport = {
-      publishLiveSync: () => void (rec.liveSyncs += 1),
+      publishLiveSync: (m) => void ((rec.liveSyncs += 1), (rec.lastLiveSync = m)),
       publishScene: (s) => void ((rec.scenes += 1), (rec.lastScene = s)),
       publishManifest: () => void (rec.manifests += 1),
       createAndActivate: (o) => void rec.createdOverlays.push(o),
@@ -364,6 +367,28 @@ const sceneWB: Scene = {
   eq(session.getState().activeDoc?.id, 'srv_a-doc', 'the served material fills the doc slot');
   eq(session.getState().servedDocs['A']?.['a-doc']?.id, 'srv_a-doc', 'the served doc is recorded per-scene');
 
+  // ── WHITEBOARD-ON-DOC ANNOTATION (Message D item 2 + R7): the board id keys off the
+  //    STABLE DOCUMENT identity (path-stripped sourceUrl 'u'), NOT the slot id 'srv_a-doc'
+  //    — so a different doc in the same slot starts blank, not the slot's old strokes. ──
+  session.setDocAnnotation(true);
+  eq(session.getState().docAnn, { on: true, boardId: 'wbann:u:0', mode: 'single' }, 'setDocAnnotation(true) keys the board off the doc identity (sourceUrl), not the slot id (R7)');
+  eq(rec.lastLiveSync?.docAnn, { on: true, boardId: 'wbann:u:0', mode: 'single' }, 'the live-sync broadcast carries the annotation descriptor (on)');
+  // Toggling off keeps the SAME board id but on:false → viewers HIDE the layer while the
+  // strokes persist (present-not-destroy). The board never changes identity on a toggle.
+  session.setDocAnnotation(false);
+  eq(session.getState().docAnn?.on, false, 'setDocAnnotation(false) flips the descriptor off (board id unchanged)');
+  eq(rec.lastLiveSync?.docAnn?.boardId, 'wbann:u:0', 'toggle-off broadcasts the same board id (strokes persist)');
+
+  // ── R1: single⇆scroll mode is SYNCED on the presenter, and swaps the annotation board
+  //    between per-page (single → wbann:<doc>:<page>) and per-doc (scroll → wbann:<doc>). ─
+  session.setDocAnnotation(true);
+  session.setDocMode('scroll');
+  eq(rec.lastLiveSync?.docPresenter?.mode, 'scroll', 'setDocMode broadcasts the mode on the presenter (R1)');
+  eq(session.getState().docAnn?.boardId, 'wbann:u', 'scroll mode → the annotation board is per-DOC (no page suffix)');
+  session.setDocMode('single');
+  eq(session.getState().docAnn?.boardId, 'wbann:u:0', 'single mode → the annotation board is per-PAGE again');
+  session.setDocAnnotation(false);
+
   // A participant join replays the doc + scene.
   const scenesBefore = rec.scenes;
   rec.fireParticipant?.();
@@ -389,6 +414,23 @@ const sceneWB: Scene = {
   eq(wbBoard?.instance?.kind, 'whiteboard', 'the carried slot holds the kind:whiteboard instance the web viewer renders');
   eq(wbBoard?.instance?.id, 'wb_tile_wb-board', 'the carried board uses the layout-stable id (placement+strokes+resolution agree)');
   ok((rec.lastScene?.nonce ?? 0) >= 1, 'the carried scene rides the director monotonic nonce (no nonce:1 race)');
+
+  // ── SYNCED whiteboard view-flags (transparent + hidden) ride scene.sync ─────────
+  // transparent → the board PAYLOAD (every viewer renders the same transparency).
+  session.setWhiteboardTransparent('wb-board', true);
+  const wbT = rec.lastScene?.overlays.find((o) => o.itemId === 'wb-board');
+  eq((wbT?.instance?.payload as WhiteboardPayload)?.transparent, true, 'setWhiteboardTransparent carries transparent:true in the synced board payload');
+  // hidden → the board is DROPPED from the viewer rendered set (instance null), so a viewer
+  // paints nothing ("for viewers it's gone"); the operator keeps a ghosted tile.
+  session.setWhiteboardHidden('wb-board', true);
+  const wbH = rec.lastScene?.overlays.find((o) => o.itemId === 'wb-board');
+  ok(wbH !== undefined && wbH.instance === null, 'setWhiteboardHidden DROPS the board from the viewer set (instance null)');
+  // un-hiding re-presents the board (with transparent still true — settings persist).
+  session.setWhiteboardHidden('wb-board', false);
+  const wbU = rec.lastScene?.overlays.find((o) => o.itemId === 'wb-board');
+  ok(wbU?.instance?.kind === 'whiteboard', 'un-hiding re-presents the board to viewers');
+  eq((wbU?.instance?.payload as WhiteboardPayload)?.transparent, true, 'the transparent setting PERSISTS across a hide/unhide');
+  eq(session.getState().wbSettings['wb-board'], { transparent: true, hidden: false }, 'wbSettings holds the synced per-item view-flags');
 
   // An inbound bot clear with no local selection clears the participation slot. The
   // streamer holds a local selection from the earlier serve, so a clear is ignored…

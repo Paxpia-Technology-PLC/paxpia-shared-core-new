@@ -81,6 +81,17 @@ export interface WhiteboardPayload {
   /** Optional background (a presigned image/PDF-page url) the board is drawn over. */
   backgroundUrl?: string;
   title?: string;
+  /** SYNCED operator setting — transparent background: when true the board page renders
+   *  alpha-0 so the underlying scene sources composite through (default opaque). It rides
+   *  the payload on `scene.sync` so EVERY viewer (web + mobile) renders the SAME
+   *  transparency the operator chose — it is NOT operator-local. Absent ⇒ opaque. */
+  transparent?: boolean;
+  /** SYNCED operator setting — viewer-visibility: when true the operator has HIDDEN the
+   *  board from viewers. The director DROPS a hidden board from the viewer's rendered set
+   *  (so "for viewers the whole thing is gone"), while the operator keeps a GHOSTED copy
+   *  it can still draw on. Carried so the state is observable + survives a scene rebuild.
+   *  Absent ⇒ visible. */
+  hidden?: boolean;
 }
 
 /** Per-user, per-overlay state that MUST persist across logout/login (e.g. "you

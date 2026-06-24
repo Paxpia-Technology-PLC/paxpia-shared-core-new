@@ -40,8 +40,10 @@ import {
 } from './docTakeover';
 import { visibleOverlays, type RenderedScene, type SceneOverlay } from './scene';
 import type { DocPresenterState, LiveManifest } from './live';
+import type { DocAnnotationState } from '../overlays/annotation';
 import type { ViewerState } from './viewer';
 import { boardStrokes } from './viewer';
+import type { GiftToast } from '../overlays/module';
 import type { WbStroke } from '../overlays/whiteboard';
 import { overlayModule } from '../overlays/registry';
 import { wbViewPersistKey } from './persist';
@@ -129,6 +131,19 @@ export interface OverlaySession {
    *  NEVER a replayed desync backlog (fixes Bug 2 for the whiteboard). The follow-effect
    *  then re-applies the snapped transform. */
   onWbResync(boardId: string): void;
+  /** WHITEBOARD-ON-DOC ANNOTATION presence (Message D item 2): the streamer's active
+   *  annotation descriptor for the live doc (`on` + active `wbann:…` `boardId` + `mode`),
+   *  folded from `live.sync.docAnn`. Null ⇒ no active annotation. The viewer renders the
+   *  annotation layer over the doc ONLY when `docAnn.on`, painting
+   *  `boardStrokes(docAnn.boardId)` — which SWAPS as the streamer flips the page / switches
+   *  the doc (the descriptor's boardId changes), so per-page/per-doc strokes present + swap
+   *  with no data loss (the strokes persist in the converged `boards` store). */
+  docAnn: DocAnnotationState | null;
+  /** The converged GIFT feed's toasts (Contract v2.4 / kinds/gift) — the append-only,
+   *  id-deduped, capped ordered list a `GiftOverlayLayer` renders. `overlay.gift` deltas
+   *  fold into `vs.gifts` through the gift module; this surfaces the toast list the UI
+   *  paints (most recent last). The layer auto-expires its own visible window. */
+  gifts: GiftToast[];
 }
 
 export interface UseOverlaySessionArgs {
@@ -332,6 +347,9 @@ export function useOverlaySession(args: UseOverlaySessionArgs): OverlaySession {
     wbTakenOver: getWbTakenOver,
     onWbTakeOver,
     onWbResync,
+    docAnn: vs.docAnn,
+    // The converged gift feed's toasts (folded from `overlay.gift` into `vs.gifts`).
+    gifts: vs.gifts.toasts,
   };
 }
 

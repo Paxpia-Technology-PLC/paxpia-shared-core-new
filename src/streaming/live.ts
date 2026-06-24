@@ -26,6 +26,7 @@
 // data channel) and the rendering differ per platform.
 
 import type { OverlayInstance, OverlayKind } from '../overlays/types';
+import type { DocAnnotationState } from '../overlays/annotation';
 
 /** Which slot a renderable kind occupies. `doc` → the document slot; every
  *  participation kind (poll/quiz/vote-button) → the overlay slot. `svg`/`gift`
@@ -261,6 +262,16 @@ export interface LiveSyncMsg {
    *  go-live announce + every participant-join replay so a guest can preload +
    *  render materials. Absent ⇒ this stream has no materials (no preload gate). */
   manifest?: LiveManifest | null;
+  /** WHITEBOARD-ON-DOC ANNOTATION presence (Message D item 2 / Contract v2.1 P4). The
+   *  streamer's CURRENT annotation descriptor for the active doc — `on` (is the layer
+   *  toggled) + the active `wbann:…` `boardId` (recomputed on every page flip / doc
+   *  switch / mode change) + the doc `mode`. The annotation STROKES are NOT here — they
+   *  ride the SAME `overlay.wb.*` wire keyed by `boardId`, folding into `boards[boardId]`.
+   *  This is the only annotation-specific signal: it tells a viewer (a) whether to render
+   *  the layer and (b) WHICH board to paint, so a toggle-OFF HIDES (P3 present-not-destroy
+   *  — the strokes persist, the layer just stops being presented). Absent ⇒ no change;
+   *  explicit `null` ⇒ no active annotation (no doc / cleared). */
+  docAnn?: DocAnnotationState | null;
 }
 
 /** A whiteboard presenter update riding `live.sync.wbPresenter` — the streamer's

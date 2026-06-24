@@ -60,6 +60,11 @@ export interface BuildWhiteboardHtmlOptions {
    *  visible either way — only the EMPTY canvas is made see-through. Default = opaque (the
    *  shared `frameHead` ink fill). */
   transparent?: boolean;
+  /** ALWAYS-DRAW (annotation-over-doc): when true a pointer-down ALWAYS starts a stroke, even
+   *  when zoomed — because for a doc annotation the DOC owns pan/zoom (the annotation just
+   *  draws on top), so the normal "pan when zoomed instead of draw" priority is wrong here.
+   *  Default false (the placed-whiteboard keeps draw-when-fit / pan-when-zoomed). */
+  alwaysDraw?: boolean;
 }
 
 /** Build the self-contained whiteboard HTML. The single entry the platform hosts (web
@@ -69,6 +74,7 @@ export function buildWhiteboardHtml(o: BuildWhiteboardHtmlOptions): string {
   const h = o.canvas?.h && o.canvas.h > 0 ? o.canvas.h : 1000;
   const editable = !!o.editable;
   const transparent = !!o.transparent;
+  const alwaysDraw = !!o.alwaysDraw;
   const penColor = typeof o.penColor === 'string' && o.penColor ? o.penColor : '#ffffff';
   const penWidth = typeof o.penWidth === 'number' && o.penWidth > 0 ? o.penWidth : 4;
   const initial = Array.isArray(o.initialStrokes) ? o.initialStrokes : [];
@@ -194,7 +200,7 @@ export function buildWhiteboardHtml(o: BuildWhiteboardHtmlOptions): string {
     // every front replays it identically. We DON'T paint locally on pointerup — the host
     // echoes the stroke back via {t:'wb.add'} after it broadcasts, so author + viewers
     // share one paint path (no double-draw). A live preview path is shown while drawing.
-    WB_EDIT(editable, penColor, penWidth),
+    WB_EDIT(editable, penColor, penWidth, alwaysDraw),
     // ── bake the initial snapshot (late joiner) ───────────────────────────────
     'for(var __i=0;__i<__strokes.length;__i++)__paint(__strokes[__i]);',
     // Fit the board to the rect (Bug 4) + apply the lossless render (Bug 5) before ready.
@@ -211,11 +217,12 @@ export function buildWhiteboardHtml(o: BuildWhiteboardHtmlOptions): string {
 // (which broadcasts it, then echoes wb.add back so it paints). Gated behind WB_EDIT so a
 // viewer frame ships zero authoring code. When zoomed (transform owns pan), drawing is
 // suppressed in favour of pan — mirrors the doc gesture priority.
-function WB_EDIT(editable: boolean, penColor: string, penWidth: number): string {
-  if (!editable) return '/* viewer mode: no authoring capture */';
+function WB_EDIT(editable: boolean, penColor: string, penWidth: number, alwaysDraw: boolean): string {
+  if (!editable) return '/* viewer / nav mode: no authoring capture */';
   return [
     '(function(){',
     'var svg=document.getElementById("board");var cur=null,curD="",prev=document.createElementNS(SVGNS,"path");',
+    'var ALWAYS_DRAW=' + JSON.stringify(alwaysDraw) + ';',
     'prev.setAttribute("fill","none");prev.setAttribute("stroke-linecap","round");prev.setAttribute("stroke-linejoin","round");',
     // Pen colour/width seed from the chrome's active swatch/width (rebuilt-on-change), and
     // can still be live-set by the host via window.__wbSetColor/__wbSetWidth if wired.
@@ -224,7 +231,9 @@ function WB_EDIT(editable: boolean, penColor: string, penWidth: number): string 
     // screen px → canvas coords via the svg CTM (accounts for the fit + the CSS transform).
     'function toCanvas(cx,cy){try{var ctm=svg.getScreenCTM();if(!ctm)return null;var pt=svg.createSVGPoint();pt.x=cx;pt.y=cy;var p=pt.matrixTransform(ctm.inverse());return {x:p.x,y:p.y};}catch(_){return null;}}',
     'function fmt(n){return Math.round(n*100)/100;}',
-    'svg.addEventListener("pointerdown",function(e){if(__vp.s>1.01)return;var p=toCanvas(e.clientX,e.clientY);if(!p)return;cur=e.pointerId;curD="M"+fmt(p.x)+" "+fmt(p.y);prev.setAttribute("d",curD);prev.setAttribute("stroke",COLOR);prev.setAttribute("stroke-width",String(WIDTH));__gel().appendChild(prev);},{passive:true});',
+    // Draw-when-fit / pan-when-zoomed for the placed board; ALWAYS draw for an annotation
+    // (the doc owns zoom, so a stroke must start regardless of the annotation\'s scale).
+    'svg.addEventListener("pointerdown",function(e){if(!ALWAYS_DRAW&&__vp.s>1.01)return;var p=toCanvas(e.clientX,e.clientY);if(!p)return;cur=e.pointerId;curD="M"+fmt(p.x)+" "+fmt(p.y);prev.setAttribute("d",curD);prev.setAttribute("stroke",COLOR);prev.setAttribute("stroke-width",String(WIDTH));__gel().appendChild(prev);},{passive:true});',
     'svg.addEventListener("pointermove",function(e){if(cur===null||e.pointerId!==cur)return;var p=toCanvas(e.clientX,e.clientY);if(!p)return;curD+=" L"+fmt(p.x)+" "+fmt(p.y);prev.setAttribute("d",curD);},{passive:true});',
     'function finish(){if(cur===null)return;cur=null;try{if(prev.parentNode)prev.parentNode.removeChild(prev);}catch(_){}if(curD.indexOf("L")<0){curD="";return;}var stroke={id:"s"+Date.now()+"_"+Math.floor(Math.random()*1e6),d:curD,color:COLOR,width:WIDTH};curD="";report({e:"wb.draw",stroke:stroke});}',
     'svg.addEventListener("pointerup",finish,{passive:true});',

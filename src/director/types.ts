@@ -26,7 +26,9 @@
 // PURE: type-only module. No DOM/RN/livekit-client. Media handles cross the seams
 // as OPAQUE `unknown` tokens exactly like `transport.ts`/`compositor.ts`.
 
-import type { DocPresenterState, LiveManifest, LiveScene } from '../streaming/live';
+import type { DocPresenterState, DocViewMode, LiveManifest, LiveScene } from '../streaming/live';
+import type { DocAnnotationState } from '../overlays/annotation';
+import type { WhiteboardItemSettings } from './logic';
 import type { DocPayload, OverlayInstance } from '../overlays/types';
 import type { RenderedScene } from '../streaming/scene';
 import type { RoomManifest } from '../streaming/prep';
@@ -130,6 +132,11 @@ export interface DirectorLiveSync {
   doc: OverlayInstance | null;
   docPresenter?: DocPresenterState | null;
   manifest?: LiveManifest | null;
+  /** WHITEBOARD-ON-DOC ANNOTATION presence (Message D item 2) — the streamer's active
+   *  annotation descriptor for the live doc, carried on every doc/scene broadcast +
+   *  participant-join replay so a (re)joining viewer learns whether the layer is on +
+   *  which `wbann:…` board to paint. Absent ⇒ unchanged; null ⇒ no active annotation. */
+  docAnn?: DocAnnotationState | null;
 }
 
 // ── The media seam (room create/connect + capture + publish) ─────────────────
@@ -313,6 +320,17 @@ export interface DirectorState {
   servedDocs: Record<string, Record<string, OverlayInstance>>;
   /** Monotonic scene-sync sequence. */
   sceneNonce: number;
+  /** WHITEBOARD-ON-DOC ANNOTATION (Message D item 2): the streamer's active annotation
+   *  descriptor for the live doc (`on` + active `wbann:…` `boardId` + `mode`), recomputed
+   *  on every doc/page/mode change + `setDocAnnotation` toggle. Mirrored to the platform
+   *  store so the operator's pen-toggle UI reflects it. Null ⇒ no active doc to annotate. */
+  docAnn: DocAnnotationState | null;
+  /** SYNCED placed-whiteboard view-flags, keyed by layout-item id: `transparent` +
+   *  `hidden`. These are NOT operator-local — they ride `scene.sync` (transparent in the
+   *  board payload; hidden drops the board from the viewer set), so every viewer reflects
+   *  the operator's choice. Mirrored to the store so the operator tile's toggles are
+   *  controlled. Empty ⇒ all placed boards opaque + visible. */
+  wbSettings: Record<string, WhiteboardItemSettings>;
 }
 
 /** The handle `createDirectorSession` returns — the producer API surface (mirrors
@@ -345,6 +363,22 @@ export interface DirectorSession {
   setDocPage(page: number): void;
   /** Update + broadcast the presenter's pan/zoom (throttled internally). */
   setDocPresenter(p: DocPresenterState): void;
+  /** Toggle the live DOC's single⇆scroll view mode; broadcasts it on the presenter so
+   *  every viewer mirrors it (R1). No-op with no active doc. */
+  setDocMode(mode: DocViewMode): void;
+  /** WHITEBOARD-ON-DOC ANNOTATION (Message D item 2): toggle the streamer-only
+   *  annotation layer over the live doc on/off, then broadcast the descriptor so viewers
+   *  show/hide it. No-op with no active doc. The strokes themselves ride the SAME
+   *  `overlay.wb.*` wire keyed by the active `wbann:…` board id. */
+  setDocAnnotation(on: boolean): void;
+  /** SYNCED whiteboard view-flags (placed board, keyed by layout-item id): set the
+   *  transparent background — rebroadcasts the scene so every viewer renders the SAME
+   *  transparency (NOT operator-local). */
+  setWhiteboardTransparent(itemId: string, transparent: boolean): void;
+  /** SYNCED whiteboard view-flags: set viewer-visibility — when hidden the board is
+   *  DROPPED from the viewer's rendered set ("for viewers it's gone") while the operator
+   *  keeps a ghosted tile. Rebroadcasts the scene. */
+  setWhiteboardHidden(itemId: string, hidden: boolean): void;
   /** Broadcast the doc slot + selected scene + manifest live-sync. */
   broadcastLiveSync(): void;
   /** Broadcast the COMPLETE rendered overlay set for the current scene. */

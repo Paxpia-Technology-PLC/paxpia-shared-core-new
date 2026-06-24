@@ -9,6 +9,11 @@ export * from './svgClock';
 export * from './consume';
 export * from './target';
 export * from './previewCompat';
+// WHITEBOARD-ON-DOC ANNOTATION (Message D item 2): the doc-scoped board-id derivation
+// (`wbann:<docId>:<page>` single / `wbann:<docId>` scroll) + the `DocAnnotationState`
+// descriptor. The annotation board IS a whiteboard board (same wire/store/module);
+// this only computes WHICH board is active so a doc/page swap SWAPS it (Invariant P4).
+export * from './annotation';
 // COMPILER-ENFORCED overlay lifecycle (Contract v2.4): the per-kind `OverlayModule`
 // contract + its type maps, the per-kind modules, and the EXHAUSTIVE typed registry
 // (`OVERLAY_MODULES` / `overlayModule`). The registry compiling IS the enforcement —

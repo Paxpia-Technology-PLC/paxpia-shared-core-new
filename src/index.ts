@@ -95,6 +95,10 @@ export {
   applyWhiteboardMsg,
   applyWbPresenter,
   boardStrokes,
+  // GIFT FEED (Contract v2.4 / kinds/gift): fold one `overlay.gift` toast into the
+  // converged append-only feed (`state.gifts`), and read the converged feed back.
+  applyGiftMsg,
+  giftFeed,
   applyPreloadProgress,
   admitToLive,
   setLocalDocPresenter,
@@ -559,3 +563,11 @@ export {
   WB_TILE_CANVAS,
 } from './director';
 export type { DirectorSession, DirectorState, DirectorDeps } from './director';
+// WALLET (§gifting lift, 2026-06-24): the gift catalog + coin-wallet RULES (pure
+// reducers) lifted out of Paxpia-mobile so web + mobile share ONE source of truth for
+// the gift catalog, emoji resolution, and debit/credit (idempotent by purchaseId).
+// Storage stays per-platform. Names don't clash with the overlay `gift` feed module
+// (GiftToast/GiftFeedState/giftModule) — those are the wire/fold, this is catalog+wallet.
+// Full path also reachable via `@paxpia/core/wallet`. See
+// paxpia-docs/SHARED-LIFT-BACKLOG-2026-06-24.md §Gifting.
+export * from './wallet';

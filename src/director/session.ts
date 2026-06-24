@@ -20,9 +20,12 @@ import {
   clearSlot,
   setSlot,
   slotForKind,
+  docViewModeOf,
   type DocPresenterState,
+  type DocViewMode,
   type ManifestEntry,
 } from '../streaming/live';
+import { docAnnotationStateFor, docAnnotationDocId, type DocAnnotationState } from '../overlays/annotation';
 import type { DocPayload, OverlayInstance } from '../overlays/types';
 import { buildManifest } from '../streaming/viewer';
 import { getCachedDoc } from '../streaming/preload';
@@ -44,6 +47,7 @@ import {
   sceneFillFor,
   snapshotScene,
   type ServedDocs,
+  type WhiteboardItemSettings,
 } from './logic';
 import type {
   DirectorDeps,
@@ -87,7 +91,38 @@ function initialState(): DirectorState {
     docPresenter: null,
     servedDocs: {},
     sceneNonce: 0,
+    docAnn: null,
+    wbSettings: {},
   };
+}
+
+/** Compute the WHITEBOARD-ON-DOC annotation descriptor for the current doc state
+ *  (Message D item 2). Null when there's no active doc to annotate. The board id is
+ *  derived from the doc INSTANCE id + current page + view mode via `docAnnotationStateFor`,
+ *  so a page flip / doc switch / mode change yields a DIFFERENT board (per-page/per-doc
+ *  strokes that SWAP, never bleed); producer + viewer derive the SAME id, so they agree
+ *  on the active board with no negotiation. */
+function computeDocAnn(
+  doc: OverlayInstance | null,
+  presenter: DocPresenterState | null,
+  on: boolean,
+): DocAnnotationState | null {
+  if (!doc || doc.kind !== 'doc') return null;
+  const payload = doc.payload as DocPayload;
+  const page = payload.page ?? 0;
+  // Key the annotation off the stable DOCUMENT identity (path-stripped source URL), NOT the
+  // slot/instance id — so swapping a different doc into the same slot starts a BLANK board
+  // (item 7) while re-serving the SAME doc resumes its strokes.
+  const docId = docAnnotationDocId(doc.id, payload.sourceUrl);
+  return docAnnotationStateFor(docId, page, docViewModeOf(presenter), on);
+}
+
+/** Value-equality for two annotation descriptors (avoids a spurious store update +
+ *  re-render when the recomputed descriptor is identical). */
+function docAnnEq(a: DocAnnotationState | null, b: DocAnnotationState | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.on === b.on && a.boardId === b.boardId && a.mode === b.mode;
 }
 
 export function createDirectorSession(deps: DirectorDeps): DirectorSession {
@@ -132,6 +167,11 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
   let preloadCache: DirectorPreloadCache = deps.newPreloadCache();
   // Throttle handle for presenter (pan/zoom) broadcasts.
   let presenterTimer: TimerHandle | null = null;
+  // WHITEBOARD-ON-DOC ANNOTATION toggle INTENT (Message D item 2). The active board id is
+  // derived from the doc+page+mode; THIS holds only whether the streamer has the layer on.
+  // The descriptor (`state.docAnn`) is recomputed from this + the active doc on every
+  // broadcast, so a page flip / doc switch swaps the board while honoring the toggle.
+  let annOn = false;
 
   // ── Scene read helpers (off the injected scenes store) ──────────────────────
   /** The producer's active Scene snapshotted to the wire `LiveScene` shape. */
@@ -187,6 +227,12 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
   function broadcastLiveSync(): void {
     if (!channel || state.status !== 'live') return;
     const { id, scene } = snapshotActiveScene();
+    // Recompute the annotation descriptor from the CURRENT doc/page/mode + toggle intent
+    // (Message D item 2) so every doc/scene change + participant-join replay carries the
+    // right `wbann:…` board + on/off. Mirror it to the store (set-if-changed) so the
+    // operator's pen-toggle UI reflects it; the strokes ride the `overlay.wb.*` wire.
+    const docAnn = computeDocAnn(state.activeDoc, state.docPresenter, annOn);
+    if (!docAnnEq(docAnn, state.docAnn)) set({ docAnn });
     channel.publishLiveSync({
       t: 'live.sync',
       v: 1,
@@ -195,6 +241,7 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
       doc: state.activeDoc,
       docPresenter: state.docPresenter,
       manifest: state.manifest,
+      docAnn,
     });
   }
 
@@ -214,7 +261,9 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
     const rendered = buildRenderedScene(
       scene,
       nonce,
-      sceneFillFor(scene, state.servedDocs, activeOverlay, overlaySlotId),
+      // wbSettings carries the SYNCED whiteboard view-flags (transparent into the payload;
+      // hidden DROPS the board from the viewer set — operator keeps a ghosted tile).
+      sceneFillFor(scene, state.servedDocs, activeOverlay, overlaySlotId, state.wbSettings),
     );
     channel.publishScene(rendered);
     // ALONGSIDE the reliable in-room scene broadcast, refresh the room-listing PREP
@@ -377,7 +426,11 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
         set({ preloadProgress: 1, error: preErr instanceof Error ? `Materials preload: ${preErr.message}` : null });
       }
 
-      set({ status: 'live', roomName, room, servedDocs: {}, sceneNonce: 0 });
+      annOn = false;
+      // wbSettings is NOT reset here — a transparent/hidden choice made in the setup
+      // PREVIEW carries into the live stream (it's reset only on endLive). servedDocs +
+      // docAnn DO reset (a fresh stream shows no doc until served).
+      set({ status: 'live', roomName, room, servedDocs: {}, sceneNonce: 0, docAnn: null });
       broadcastLiveSync();
       broadcastScene();
     } catch (e) {
@@ -424,6 +477,7 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
     preloadCache = deps.newPreloadCache();
     localOverlayId = null;
     overlayGens.clear();
+    annOn = false;
     scheduling.setActiveStream?.(null);
     set({
       status: 'idle',
@@ -439,6 +493,8 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
       sceneNonce: 0,
       audioOnly: false,
       provisioning: null,
+      docAnn: null,
+      wbSettings: {},
     });
   }
 
@@ -583,6 +639,51 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
     }, PRESENTER_THROTTLE_MS);
   }
 
+  /** Update a placed whiteboard's SYNCED view-flags (transparent / hidden) keyed by its
+   *  layout-item id, then rebroadcast the scene so EVERY viewer reflects the change. A
+   *  transparent toggle re-renders the board alpha-0 on all planes; a hidden toggle drops
+   *  it from the viewer's rendered set (the operator keeps a ghosted tile). Pure-ish: only
+   *  touches `wbSettings` + a scene rebroadcast. */
+  function setWhiteboardSetting(itemId: string, patch: WhiteboardItemSettings): void {
+    const boardKey = itemId; // wbSettings is keyed by the layout-item id
+    set((s) => {
+      const prev = s.wbSettings[boardKey] ?? {};
+      const next: WhiteboardItemSettings = { ...prev, ...patch };
+      if (prev.transparent === next.transparent && prev.hidden === next.hidden) return {};
+      return { wbSettings: { ...s.wbSettings, [boardKey]: next } };
+    });
+    // The synced flags ride the rendered scene (transparent → payload; hidden → drop).
+    broadcastScene();
+  }
+  function setWhiteboardTransparent(itemId: string, transparent: boolean): void {
+    setWhiteboardSetting(itemId, { transparent });
+  }
+  function setWhiteboardHidden(itemId: string, hidden: boolean): void {
+    setWhiteboardSetting(itemId, { hidden });
+  }
+
+  function setDocMode(mode: DocViewMode): void {
+    const a = state.activeDoc;
+    if (!a || a.kind !== 'doc') return;
+    const prev = state.docPresenter;
+    if (docViewModeOf(prev) === mode) return;
+    const page = prev?.page ?? (a.payload as DocPayload).page ?? 0;
+    // Carry the new mode on the presenter so every viewer mirrors the single⇆scroll toggle
+    // (R1). broadcastLiveSync also recomputes docAnn — so the annotation board id swaps
+    // between per-page (single) and per-doc (scroll) with the mode.
+    set({ docPresenter: { page, zoom: prev?.zoom ?? 1, panX: prev?.panX ?? 0, panY: prev?.panY ?? 0, mode, scrollPos: prev?.scrollPos ?? 0 } });
+    broadcastLiveSync();
+  }
+
+  function setDocAnnotation(on: boolean): void {
+    // No active doc → nothing to annotate (the toggle intent is still recorded so a
+    // subsequently-served doc honors it). Recompute + broadcast the descriptor so viewers
+    // show/hide the layer; the strokes ride the `overlay.wb.*` wire keyed by the active
+    // `wbann:…` board id (the operator's publisher uses `state.docAnn.boardId`).
+    annOn = on;
+    broadcastLiveSync();
+  }
+
   function serveOverlayToSlot(
     body: { kind: PushableOverlay['kind']; title: string; payload: PushableOverlay['payload'] },
     itemId?: string,
@@ -635,6 +736,10 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
     refreshOverlayId,
     setDocPage,
     setDocPresenter,
+    setDocMode,
+    setDocAnnotation,
+    setWhiteboardTransparent,
+    setWhiteboardHidden,
     broadcastLiveSync,
     broadcastScene,
     publishManifest,

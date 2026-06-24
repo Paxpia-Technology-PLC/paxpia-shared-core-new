@@ -2,7 +2,7 @@
 // Web + mobile both call `can(account, capability)`; adding a feature means
 // adding a capability + wiring it into `capabilitiesFor`, so the two platforms
 // can't drift on who's allowed to do what.
-import { Account, isEducator, isPremium } from './types';
+import { type Account, isEducator, isPremium } from './types';
 
 export type Capability =
   // ── streaming — every account ──
@@ -23,6 +23,7 @@ export type Capability =
   | 'dashboard.materials' // document uploads
   | 'dashboard.quizzes' // quiz authoring
   | 'dashboard.members' // view paying members / super-followers
+  | 'dashboard.analytics' // classroom/audience analytics (retention, attendance)
   // ── stream types — EDUCATOR only (start simple: a class, a paid class) ──
   | 'stream.private' // private streams to community/super-followers
   | 'stream.paid_class'
@@ -41,6 +42,7 @@ const EDUCATOR_CAPS: Capability[] = [
   'dashboard.materials',
   'dashboard.quizzes',
   'dashboard.members',
+  'dashboard.analytics',
   'stream.private',
   'stream.paid_class',
 ];

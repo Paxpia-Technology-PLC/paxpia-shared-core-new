@@ -31,6 +31,8 @@ import {
 } from './wire';
 import { decodeSvgOverlayMsg, type SvgOverlayMsg } from './svg';
 import { decodeWbMsg, type WbMsg } from './whiteboard';
+import { GIFT_WIRE_VERSION } from './kinds/gift';
+import type { GiftDeltaMsg, GiftToast } from './module';
 import { decodeLiveSyncMsg, type LiveSyncMsg } from '../streaming/live';
 import { decodeSceneSyncMsg, type SceneSyncMsg } from '../streaming/scene';
 
@@ -56,6 +58,8 @@ export type OverlayChannelEvent =
   | { kind: 'overlay.svg'; msg: SvgOverlayMsg }
   /** A whiteboard stroke/erase/wipe/snapshot delta (retires the private live.data plane). */
   | { kind: 'overlay.wb'; msg: WbMsg }
+  /** One gift toast to append to the append-only gift feed (`overlay.gift`). */
+  | { kind: 'overlay.gift'; msg: GiftDeltaMsg }
   /** The payload was on-topic but no decoder claimed it (an unknown/newer `t`, or a
    *  malformed/oversized envelope a decoder rejected). `t` carries the raw type tag
    *  when one was present, so a consumer can log a precise "unsupported overlay
@@ -79,6 +83,58 @@ function peekType(bytes: Uint8Array): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** Max bytes of ONE gift envelope we accept — a fire-and-forget toast is tiny, so an
+ *  oversized payload is rejected at decode time (returns null) rather than parsed. 2 KiB. */
+const GIFT_MAX_BYTES = 2 * 1024;
+
+/** Serialize a gift delta to the bytes published on the `overlay` topic (the read-side
+ *  pair of `decodeGiftMsg`). Mirrors the module's private encoder; surfaced here so a
+ *  PRODUCER (the viewer's send-gift action / a demo) can put a toast on the wire without
+ *  reaching into the kind module. Stamps the wire version when the caller omitted it. */
+export function encodeGiftMsg(msg: GiftDeltaMsg): Uint8Array {
+  const withV = { ...msg, v: msg.v ?? GIFT_WIRE_VERSION };
+  const json = JSON.stringify(withV);
+  const g = globalThis as unknown as { TextEncoder?: new () => { encode(s: string): Uint8Array } };
+  if (g.TextEncoder) return new g.TextEncoder().encode(json);
+  const out = new Uint8Array(json.length);
+  for (let i = 0; i < json.length; i++) out[i] = json.charCodeAt(i) & 0xff;
+  return out;
+}
+
+/** Decode bytes into a gift delta, or null when they aren't one (so a foreign packet on
+ *  the shared topic is safely ignored, never throws). Mirrors `decodeWbMsg`: UTF-8 JSON,
+ *  byte-capped, with the required `toast` fields validated. The encode side lives in the
+ *  gift MODULE (`giftModule.applyLocal`); this is the read side the consume ladder owns. */
+export function decodeGiftMsg(bytes: Uint8Array): GiftDeltaMsg | null {
+  if (bytes.length > GIFT_MAX_BYTES) return null;
+  let obj: unknown;
+  const g = globalThis as unknown as { TextDecoder?: new () => { decode(b: Uint8Array): string } };
+  let json: string;
+  if (g.TextDecoder) json = new g.TextDecoder().decode(bytes);
+  else {
+    let s = '';
+    for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+    json = s;
+  }
+  try {
+    obj = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  if (!obj || typeof obj !== 'object') return null;
+  const o = obj as { t?: unknown; v?: unknown; toast?: unknown };
+  if (o.t !== 'overlay.gift') return null;
+  const to = o.toast as Partial<GiftToast> | undefined;
+  if (!to || typeof to !== 'object') return null;
+  if (typeof to.id !== 'string' || typeof to.from !== 'string' || typeof to.giftId !== 'string') return null;
+  if (typeof to.atUnix !== 'number' || !Number.isFinite(to.atUnix)) return null;
+  return {
+    t: 'overlay.gift',
+    v: typeof o.v === 'number' ? o.v : GIFT_WIRE_VERSION,
+    toast: { id: to.id, from: to.from, giftId: to.giftId, atUnix: to.atUnix },
+  };
 }
 
 /**
@@ -115,6 +171,9 @@ export function decodeOverlayChannelMsg(bytes: Uint8Array): OverlayChannelEvent 
 
   const wb = decodeWbMsg(bytes);
   if (wb) return { kind: 'overlay.wb', msg: wb };
+
+  const gift = decodeGiftMsg(bytes);
+  if (gift) return { kind: 'overlay.gift', msg: gift };
 
   return { kind: 'unsupported', t: peekType(bytes) };
 }
