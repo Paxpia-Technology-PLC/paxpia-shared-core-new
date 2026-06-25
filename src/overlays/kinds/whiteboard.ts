@@ -40,6 +40,17 @@ export { wbViewPersistKey };
 export const whiteboardModule: OverlayModule<'whiteboard'> = {
   kind: 'whiteboard',
 
+  /** PLANE: STREAMER-plane (Stream G3). The producer (or operator) authors strokes
+   *  (`overlay.wb.*`) + the board's presenter transform. A VIEWER's pan/zoom is a LOCAL,
+   *  PER-BOARD view-plane takeover that does NOT propagate — it converges back on RESYNC
+   *  (snap to the board's current transform via `onResync`), like the doc. Strokes are
+   *  content the producer owns; a viewer never originates a propagating board edit. */
+  actionPlane: {
+    plane: 'streamer',
+    viewerOriginates: false,
+    viewerActionPropagates: false,
+  },
+
   /** Per-BOARD view key (`wb:<boardId>`) — derived from the layout-stable board id, so
    *  the board's transform survives a scene unmount (the strokes already survive in
    *  `boards[boardId]`). */

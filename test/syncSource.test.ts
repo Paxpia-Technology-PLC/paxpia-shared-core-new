@@ -272,6 +272,36 @@ const overlayChangedEv: OverlayChannelEvent = {
   eq(boardStrokes(src.getState(), 'other').strokes.length, 0, 'an unseen board reads empty');
 }
 
+// ── Stream G3: scene.sync advances the vote-target activeOverlay (web reset path) ──
+// On the web lane a RESET reaches viewers ONLY via scene.sync (no bot → no overlay.changed).
+// applySceneSync must mirror the participation instance the rendered set carries back into
+// slots.activeOverlay at the HIGHER gen, so the viewer's NEXT vote goes out at the new gen
+// (else the aggregator buckets it into the dead round and the dash never moves). It must
+// also clear the vote target when a scene drops the overlay slot, and never regress gen.
+{
+  // Build a rendered scene whose overlay slot is FILLED by a poll at a given gen.
+  const renderWith = (p: OverlayInstance | null, nonce: number): RenderedScene =>
+    buildRenderedScene(sceneA, nonce, (_id, type) => (type === 'overlay' ? p : null));
+
+  let st = initialViewerState();
+  // gen 1 poll arrives via scene.sync → it becomes the vote target.
+  st = applySceneSync(st, renderWith(poll('srv_poll:Q', 1), 1));
+  eq(st.slots.activeOverlay?.id, 'srv_poll:Q', 'scene.sync sets the vote-target overlay');
+  eq(st.slots.activeOverlay?.gen, 1, 'vote target at gen 1');
+
+  // RESET: the SAME poll re-arrives at gen 2 (the web reset's only viewer-facing signal).
+  st = applySceneSync(st, renderWith(poll('srv_poll:Q', 2), 2));
+  eq(st.slots.activeOverlay?.gen, 2, 'reset gen-2 reaches the vote target via scene.sync (G3 fix)');
+
+  // A STALE scene.sync carrying gen 1 must NOT regress the round (never-regress-gen).
+  st = applySceneSync(st, renderWith(poll('srv_poll:Q', 1), 3));
+  eq(st.slots.activeOverlay?.gen, 2, 'a stale (older-gen) scene.sync does NOT regress the vote round');
+
+  // A scene that DROPS the overlay slot clears the vote target (so onVote can't fire stale).
+  st = applySceneSync(st, renderWith(null, 4));
+  ok(st.slots.activeOverlay === null, 'scene without an overlay slot clears the vote target');
+}
+
 // ── report ───────────────────────────────────────────────────────────────────
 if (failures.length > 0) {
   console.error(`FAIL — ${failures.length} failed, ${passed} passed:`);

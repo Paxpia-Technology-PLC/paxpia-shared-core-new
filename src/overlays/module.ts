@@ -239,11 +239,73 @@ export type ResyncSnap<K extends OverlayKind> = K extends 'doc' | 'whiteboard'
   ? { transform: OverlayTransform }
   : never;
 
+// ── PLANE AWARENESS (Stream G3 — who OWNS a local action + does it propagate) ──
+//
+// THE DEFECT G3 PINS DOWN: a viewer's vote moved the *local* optimistic bar but its
+// `overlay.response` never reached the producer (the scene-rebuild nulled the viewer's
+// `activeOverlay`, so `onVote` early-returned and published nothing), so the dashboard
+// + other viewers never saw it — a "UI-only optimistic set that never propagates."
+//
+// The cure is to make EVERY kind DECLARE which side OWNS its local action, whether a
+// VIEWER may originate that action, and whether a viewer-originated action must
+// PROPAGATE off-device (to the producer/aggregator + back to all viewers) — as a
+// COMPILER-ENFORCED member of the module contract, exactly like `onResync`. A kind that
+// forgets to decide does not type-check at the registry.
+//
+//   • 'streamer' — only the producer originates this kind's authoritative edits (svg
+//      decorations, doc page/presenter, whiteboard strokes, scene placement). A viewer's
+//      LOCAL interaction with it (pan/zoom takeover) is a *view-plane* divergence that
+//      stays local until resync — it is NOT a state edit that propagates.
+//   • 'viewer'   — a VIEWER originates the action and it MUST propagate: the vote
+//      (`overlay.response` → aggregator → `overlay.results` to everyone), the gift
+//      (`overlay.gift` toast broadcast). `viewerOriginates` is true and
+//      `viewerActionPropagates` is true: a viewer action that does NOT leave the device
+//      is the bug. The producer's authoritative echo (`overlay.results`) is what COMMITS
+//      it everywhere — never a device-local set.
+export type OverlayPlane = 'streamer' | 'viewer';
+
+/** kind → which plane OWNS the authoritative local action for that kind. Participation
+ *  + gift are VIEWER-plane (a viewer originates + it propagates); everything else is
+ *  STREAMER-plane (the producer authors; a viewer's local pan/zoom is view-only). */
+export interface OverlayActionPlaneByKind {
+  svg: 'streamer';
+  poll: 'viewer';
+  'vote-button': 'viewer';
+  quiz: 'viewer';
+  doc: 'streamer';
+  gift: 'viewer';
+  whiteboard: 'streamer';
+}
+
+/** The plane contract a module declares (Stream G3). Makes "is this a streamer-plane or
+ *  viewer-plane action, and must a viewer's action propagate off-device?" a structural,
+ *  registry-enforced fact — so a kind can't silently ship a viewer action that only
+ *  updates the local UI (the G3 vote-desync defect class). */
+export interface OverlayActionPlane<K extends OverlayKind> {
+  /** Which side OWNS this kind's authoritative local action. */
+  readonly plane: OverlayActionPlaneByKind[K];
+  /** May a VIEWER originate this kind's action? True only for viewer-plane kinds. */
+  readonly viewerOriginates: boolean;
+  /** When a viewer originates the action, MUST it propagate off-device (producer/
+   *  aggregator → broadcast back to all viewers + the producer's own dashboard)? True
+   *  for viewer-plane kinds — a viewer action that stays device-local is the G3 bug. A
+   *  streamer-plane kind's viewer interaction (pan/zoom takeover) is view-only, so this
+   *  is false (it converges back on RESYNC, not by propagation). */
+  readonly viewerActionPropagates: boolean;
+}
+
 /** THE per-kind contract. EVERY member is REQUIRED (no `?`), so a kind that forgets
  *  one does not type-check at the registry. Two faces: HOSTING (author/produce side —
  *  studio + mobile creator) + SYNCING (consume/converge side — every viewer). */
 export interface OverlayModule<K extends OverlayKind> {
   readonly kind: K;
+
+  /** PLANE AWARENESS (Stream G3): which side OWNS this kind's local action + whether a
+   *  viewer action must propagate off-device. A MANDATORY member (no `?`) so every kind
+   *  DECIDES — the registry's exhaustive map makes "forgot to declare a kind's plane" a
+   *  compile error, exactly like a missing `onResync`. The render-brain reads this to
+   *  ASSERT a viewer-plane action is actually published, never a local-only set. */
+  readonly actionPlane: OverlayActionPlane<K>;
 
   // ── identity + persistence ───────────────────────────────────────────────────
   /** The stable owner key for this instance's persisted state. Derived ONLY from

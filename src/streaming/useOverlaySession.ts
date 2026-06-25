@@ -186,6 +186,34 @@ export function useOverlaySession(args: UseOverlaySessionArgs): OverlaySession {
   const voteRef = useRef(vote);
   voteRef.current = vote;
 
+  // ── Stream G3: reset the vote ROUND off the CONVERGED active overlay ─────────
+  // On the WEB lane there is no server bot, so a RESET (gen-bump) reaches viewers ONLY
+  // via the full-replace `scene.sync` (which folds into `vs.slots.activeOverlay` at the
+  // new gen — see applySceneSync). That path does NOT emit an `overlay.changed` event, so
+  // the explicit `applyVoteChanged` in the transport effect below never fires for a web
+  // reset, and the viewer stayed "voted" at the OLD round (its next vote went out at the
+  // stale gen → the aggregator dropped it → the dashboard never moved). This effect makes
+  // the vote round track the CONVERGED instance: when the active (id, gen) changes, reset
+  // the optimistic/committed vote so a reset re-opens participation and a fresh vote is
+  // published at the CURRENT gen — the authoritative fix for "votes only show on the
+  // viewer UI" after a Reset/scene-change.
+  //
+  // The `lastVoteRoundRef` is SHARED with the transport effect's `applyVoteChanged`: a
+  // BACKEND-lane `overlay.changed` (which carries a targeted `mine`) stamps the round it
+  // adopts, so this effect treats that round as already-handled and does NOT clobber the
+  // committed `mine` it just adopted. So: the web lane resets here; the backend lane
+  // resets-and-adopts-mine in the transport callback — never both for one round.
+  const lastVoteRoundRef = useRef<string | null>(null);
+  useEffect(() => {
+    const roundKey = activeOverlay ? `${activeOverlay.id}#${activeOverlay.gen}` : null;
+    if (roundKey === lastVoteRoundRef.current) return; // round already handled (or unchanged)
+    lastVoteRoundRef.current = roundKey;
+    // A new round (incl. a reset's gen bump, or the slot clearing) the transport callback
+    // did NOT already adopt → drop the prior optimistic + committed choice + stale results
+    // so the viewer can act again at the current gen.
+    setVote(() => initialVoteState());
+  }, [activeOverlay]);
+
   // ── viewer-local doc takeover overlay ──────────────────────────────────────
   const [takeover, setTakeover] = useState<DocTakeoverState>(() => initialDocTakeover());
   const [presented, setPresented] = useState<PresentedDoc>(() => ({
@@ -226,6 +254,12 @@ export function useOverlaySession(args: UseOverlaySessionArgs): OverlaySession {
       source.ingest(ev, now());
       // Mirror the participation-specific arms into the viewer-local vote state.
       if (ev.kind === 'overlay.changed') {
+        // BACKEND lane: a server-bot `overlay.changed` carries a targeted `mine`. Stamp
+        // the round it adopts so the converged-round reset effect (above) treats this
+        // round as handled and does NOT wipe the `mine` we adopt here (Stream G3). The
+        // WEB lane has no such event → that effect owns the reset there.
+        const o = ev.msg.overlay;
+        lastVoteRoundRef.current = o ? `${o.id}#${o.gen}` : null;
         setVote((v) => applyVoteChanged(v, activeOverlayRef.current, ev.msg.overlay, ev.msg.mine));
       } else if (ev.kind === 'overlay.results') {
         setVote((v) => applyVoteResults(v, activeOverlayRef.current, ev.msg));

@@ -24,6 +24,18 @@ import { emptyDocView } from '../module';
 export const docModule: OverlayModule<'doc'> = {
   kind: 'doc',
 
+  /** PLANE: STREAMER-plane (Stream G3). The producer owns the authoritative doc state
+   *  (page flip + presenter pan/zoom ride `live.sync`). A VIEWER's pan/zoom is a LOCAL
+   *  view-plane TAKEOVER that does NOT propagate — it stays device-local and converges
+   *  back on RESYNC (snap to the streamer's current transform), never by broadcasting the
+   *  viewer's view. So `viewerActionPropagates` is false: a viewer can diverge the view,
+   *  but it is not an off-device state edit. */
+  actionPlane: {
+    plane: 'streamer',
+    viewerOriginates: false,
+    viewerActionPropagates: false,
+  },
+
   /** Per-DOC view key (`doc:<docId>`) — delegates to the shared derivation the
    *  converged store's presenter promotion uses, so module + store agree on ONE key
    *  (re-serving the same doc resumes its page+transform). NEVER a mount nonce (P4). */

@@ -24,6 +24,15 @@ import type { OverlayModule, PersistKey, PersistCtx } from '../module';
 export const svgModule: OverlayModule<'svg'> = {
   kind: 'svg',
 
+  /** PLANE: STREAMER-plane (Stream G3). Only the producer authors svg decorations
+   *  (`overlay.svg` set/delete); a viewer never originates one and there is nothing for a
+   *  viewer to propagate. By-id LWW converges every front; no viewer action plane. */
+  actionPlane: {
+    plane: 'streamer',
+    viewerOriginates: false,
+    viewerActionPropagates: false,
+  },
+
   /** Per-svg key (`svg:<id>`) — the set is already id-keyed; this brands it. NEVER a
    *  mount nonce (P4). */
   persistKey(inst: OverlayInstance, _ctx: PersistCtx): PersistKey {

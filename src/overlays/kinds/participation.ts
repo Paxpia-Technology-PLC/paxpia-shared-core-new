@@ -17,7 +17,7 @@ import {
   type OverlayResponseMsg,
 } from '../wire';
 import { brandPersistKey, emptyVoteAggregate } from '../module';
-import type { OverlayModule, PersistKey, PersistCtx, VoteAggregate } from '../module';
+import type { OverlayModule, OverlayActionPlane, PersistKey, PersistCtx, VoteAggregate } from '../module';
 
 type ParticipationKind = 'poll' | 'quiz' | 'vote-button';
 
@@ -26,6 +26,17 @@ type ParticipationKind = 'poll' | 'quiz' | 'vote-button';
 function makeParticipationModule<K extends ParticipationKind>(kind: K): OverlayModule<K> {
   return {
     kind,
+
+    /** PLANE: VIEWER-plane (Stream G3). A viewer ORIGINATES the vote and it MUST
+     *  propagate — `applyLocal` emits `overlay.response` to the aggregator, which
+     *  broadcasts the authoritative `overlay.results` back to EVERY viewer + the
+     *  producer's dashboard. A vote that stays device-local (the G3 desync bug) violates
+     *  this contract: the optimistic bar is feedback, the propagated result is truth. */
+    actionPlane: {
+      plane: 'viewer',
+      viewerOriginates: true,
+      viewerActionPropagates: true,
+    } as OverlayActionPlane<K>,
 
     /** Content-stable vote key `(overlayId, gen)` — re-serving the SAME overlay reuses
      *  the key so votes persist across a swap (P5). NEVER a mount nonce (P4). */

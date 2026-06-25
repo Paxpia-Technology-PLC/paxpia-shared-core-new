@@ -82,6 +82,26 @@ function eq<T>(actual: T, expected: T, name: string): void {
     ok(overlayModule(kind) === OVERLAY_MODULES[kind], `overlayModule(${kind}) resolves the registry entry`);
   }
 
+  // ── Stream G3: PLANE AWARENESS is declared + coherent for every kind ──────────
+  // Every module declares its action plane (a mandatory member — the registry enforces
+  // it at compile time; this asserts the runtime values are coherent). Participation +
+  // gift are VIEWER-plane and MUST propagate a viewer action off-device (the G3 vote-
+  // desync class); everything else is STREAMER-plane with no propagating viewer action.
+  const VIEWER_PLANE_KINDS: OverlayKind[] = ['poll', 'quiz', 'vote-button', 'gift'];
+  for (const kind of OVERLAY_KINDS) {
+    const ap = overlayModule(kind).actionPlane;
+    ok(ap !== undefined && (ap.plane === 'viewer' || ap.plane === 'streamer'), `${kind} declares a plane`);
+    if (VIEWER_PLANE_KINDS.includes(kind)) {
+      ok(ap.plane === 'viewer', `${kind} is VIEWER-plane`);
+      ok(ap.viewerOriginates === true, `${kind} viewerOriginates`);
+      ok(ap.viewerActionPropagates === true, `${kind} viewer action PROPAGATES (G3 invariant)`);
+    } else {
+      ok(ap.plane === 'streamer', `${kind} is STREAMER-plane`);
+      ok(ap.viewerOriginates === false, `${kind} viewer does NOT originate`);
+      ok(ap.viewerActionPropagates === false, `${kind} no propagating viewer action`);
+    }
+  }
+
   // ResyncSnap is gen-discriminated: transform kinds may snap; others NEVER do (return
   // null). This is the runtime shadow of the `ResyncSnap<K> = {transform} | never`
   // compile guard that makes Bug-2 a type error.

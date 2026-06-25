@@ -343,17 +343,65 @@ export function applyOverlayChanged(state: ViewerState, overlay: OverlayInstance
  *  are dropped wholesale and ONLY the new scene's set (at its per-scene rects) is
  *  rendered — monotonic by nonce so a late/duplicate packet can't regress.
  *
- *  The viewer's overlay layer is now a PURE function of the latest applied snapshot:
- *  we do NOT re-inject anything from the legacy two-slot state (slots.activeOverlay /
- *  slots.activeDoc). The producer is the single source of truth — its RenderedScene
- *  ALREADY carries the active participation overlay in the matching slot (see
- *  buildRenderedScene fills on the producer). So an overlay (poll or doc) that the
- *  new scene doesn't include simply vanishes on switch, guaranteed, with zero
- *  remnant — no message-timing/loss can leave a stale fold behind. Pure. */
+ *  The viewer's overlay layer is a PURE function of the latest applied snapshot: we do
+ *  NOT re-inject anything into the rendered layer from the legacy two-slot state. The
+ *  producer is the single source of truth — its RenderedScene ALREADY carries the active
+ *  participation overlay in the matching slot (see buildRenderedScene fills on the
+ *  producer). So an overlay (poll or doc) the new scene doesn't include simply vanishes
+ *  on switch, guaranteed, with zero remnant.
+ *
+ *  ── Stream G3: the scene-sync is ALSO the participation vote-target source ──────────
+ *  On the WEB lane there is NO server bot, so a RESET (gen-bump) re-`activate`s the
+ *  overlay but the only thing that carries the new-gen instance to viewers is THIS
+ *  full-replace scene.sync (the producer embeds the live `activeOverlay` in the rendered
+ *  set). The legacy code left `slots.activeOverlay` untouched here, so after a web reset a
+ *  viewer kept voting at the OLD gen → the aggregator (now at the NEW gen) bucketed those
+ *  votes into a dead round and the dashboard never moved (the G3 "votes only register on
+ *  the viewer UI" desync). FIX: mirror the participation instance the scene.sync carries
+ *  back into `slots.activeOverlay` (the vote-target the render-brain reads), keyed by the
+ *  HIGHER gen — so a reset's new gen reaches the viewer's vote path even with no bot, and
+ *  a scene-switch that DROPS the overlay slot clears the vote target too. Never regresses
+ *  gen (an older snapshot can't roll the round back). Pure. */
 export function applySceneSync(state: ViewerState, next: RenderedScene): ViewerState {
   const replaced = applyFullScene(state.rendered, next);
   if (replaced === state.rendered) return state; // stale snapshot → no change
-  return { ...state, rendered: replaced };
+  const nextActive = participationInstanceOf(replaced);
+  const slots = reconcileSceneActiveOverlay(state.slots, nextActive);
+  if (slots === state.slots) return { ...state, rendered: replaced };
+  return { ...state, rendered: replaced, slots };
+}
+
+/** The participation overlay instance the rendered scene carries (the first filled
+ *  overlay-type slot), or null when the scene has none. The bot/producer drops the live
+ *  participation instance into an overlay slot; this recovers it so the viewer's vote
+ *  target tracks what is actually painted. Pure. */
+function participationInstanceOf(scene: RenderedScene): OverlayInstance | null {
+  for (const o of scene.overlays) {
+    if (o.type === 'overlay' && o.instance) return o.instance;
+  }
+  return null;
+}
+
+/** Reconcile the legacy `activeOverlay` slot against the participation instance a
+ *  scene.sync carries, NEVER regressing the round (Stream G3):
+ *   • scene carries the SAME id at a HIGHER (or equal) gen → adopt it (a reset's new gen
+ *     reaches the viewer's vote path even with no bot driving `overlay.changed`).
+ *   • scene carries a DIFFERENT id → adopt it (a fresh poll served into the slot).
+ *   • scene carries the same id at a STRICTLY OLDER gen → keep the current (a stale/late
+ *     snapshot can't roll the round back, mirroring `applyOverlayChanged`'s never-regress).
+ *   • scene carries NO participation overlay → clear the vote target (the slot emptied).
+ *  Returns the SAME slots ref on a no-op so the fold coalesces to zero re-renders. Pure. */
+function reconcileSceneActiveOverlay(
+  slots: ViewerState['slots'],
+  next: OverlayInstance | null,
+): ViewerState['slots'] {
+  const cur = slots.activeOverlay;
+  if (!next) {
+    return cur ? { ...slots, activeOverlay: null } : slots;
+  }
+  if (cur && cur.id === next.id && next.gen < cur.gen) return slots; // never regress gen
+  if (cur && cur.id === next.id && cur.gen === next.gen && cur === next) return slots;
+  return setSlot(slots, next);
 }
 
 /** Place a participation overlay instance into the rendered layer's FIRST overlay

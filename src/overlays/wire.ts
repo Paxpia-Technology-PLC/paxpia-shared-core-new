@@ -38,6 +38,12 @@ export type OverlayControlAction =
   | 'close' // stop accepting responses (active → closed); tallies freeze
   | 'reveal' // reveal answer/results (e.g. quiz correct option) (closed → revealed)
   | 'next' // advance to the next staged overlay / clear the active one
+  | 'reset' // STREAM G3: authoritative FULL-ROOM round reset — bump gen, CLEAR all
+  //          persisted rows for the prior round (Redis/in-memory), re-open at the new gen,
+  //          and re-broadcast overlay.changed + an empty overlay.results so EVERY viewer +
+  //          the streamer converge to a fresh tally. Distinct from `activate` (which the
+  //          web lane overloaded for reset) so a backend bot can implement reset as a
+  //          single authoritative transaction (`DEL room:overlay:gen rows`), not a re-create.
   | 'request_state'; // (any participant) ask the bot to replay current state to me
 
 /** STREAMER control message. `overlay` is required for `create`; `overlayId` for
@@ -284,6 +290,59 @@ export function buildResultsMsg(
     tallies,
     total: totalVotes(tallies),
   };
+}
+
+// ── Durable vote snapshot (Stream G3 — the Redis-backed authoritative tally) ──────
+// The web lane self-aggregates in the streamer's TAB (an in-memory `votesByRound` Map),
+// so a streamer reload / scene rebuild lost the tally and the dash desynced. The durable
+// design moves the authoritative tally to a backend overlays/vote service keyed by
+// `room + overlayId + gen`. This is the persisted shape that service stores (Redis hash
+// `votes:{room}:{overlayId}:{gen}` = stableIdentity → choice) and REPLAYS to a (re)joining
+// client — so the dash + every viewer share ONE truth that survives scene changes /
+// reconnects / a streamer reload. The CLIENT contract is here so the service mirrors it
+// field-for-field; the client folds a replayed snapshot exactly like a live results tick.
+
+/** The authoritative, persistable state of ONE participation round — the value a backend
+ *  vote service stores (Redis) under `room+overlayId+gen` and replays on join/reconnect.
+ *  `rows` is one entry per stable identity (vote-once; last-choice-wins on re-vote), so the
+ *  service can rebuild `tally(rows)` AND answer a per-identity `mine` from the SAME record.
+ *  A RESET deletes the prior gen's record and writes a fresh empty one at gen+1. */
+export interface VoteSnapshot {
+  roomName: string;
+  overlayId: string;
+  gen: number;
+  /** One committed vote per stable identity (the dedup key). */
+  rows: OverlayResponseRow[];
+}
+
+/** A fresh, empty snapshot for a round (what a RESET writes at the new gen). Pure. */
+export function emptyVoteSnapshot(roomName: string, overlayId: string, gen: number): VoteSnapshot {
+  return { roomName, overlayId, gen, rows: [] };
+}
+
+/** Project a durable `VoteSnapshot` into the `overlay.results` tick clients fold — so a
+ *  replayed snapshot (from Redis) and a live aggregated tick are byte-identical to the
+ *  viewer's `applyVoteResults` / module `applyRemote`. The service calls this to answer a
+ *  `request_state`; the in-tab web aggregator builds the same shape from `votesByRound`.
+ *  Pure. */
+export function resultsFromSnapshot(snap: VoteSnapshot): OverlayResultsMsg {
+  const tallies = tally(snap.rows);
+  return {
+    t: 'overlay.results',
+    v: OVERLAY_WIRE_VERSION,
+    roomName: snap.roomName,
+    overlayId: snap.overlayId,
+    gen: snap.gen,
+    phase: 'active',
+    tallies,
+    total: totalVotes(tallies),
+  };
+}
+
+/** Recover a stable identity's committed choice from a durable snapshot (the per-viewer
+ *  `mine` a targeted replay carries, so "you voted" survives a reload). Pure. */
+export function mineFromSnapshot(snap: VoteSnapshot, stableIdentity: string): string | undefined {
+  return snap.rows.find((r) => r.identity === stableIdentity)?.choice;
 }
 
 // ── identity helpers ─────────────────────────────────────────────────────────

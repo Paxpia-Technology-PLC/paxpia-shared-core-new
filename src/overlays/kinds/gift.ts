@@ -48,6 +48,16 @@ function appendToast(state: GiftFeedState, toast: GiftToast): GiftFeedState {
 export const giftModule: OverlayModule<'gift'> = {
   kind: 'gift',
 
+  /** PLANE: VIEWER-plane (Stream G3). A viewer SENDS a gift; the `overlay.gift` toast
+   *  propagates to every viewer + the producer's feed (fire-and-forget, idempotent by
+   *  id). Like the vote it must leave the device — the local append is feedback, the
+   *  broadcast toast is what every front converges on. */
+  actionPlane: {
+    plane: 'viewer',
+    viewerOriginates: true,
+    viewerActionPropagates: true,
+  },
+
   /** Per-feed key (`gift:<instanceId>`) — the feed is per gift overlay instance. */
   persistKey(inst: OverlayInstance, _ctx: PersistCtx): PersistKey {
     return brandPersistKey(`gift:${inst.id}`);
