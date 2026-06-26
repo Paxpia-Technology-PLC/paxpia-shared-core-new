@@ -91,9 +91,16 @@ export function resolveDocRender(
   const pageCount = pages.length > 0 ? pages.length : entry?.pageCount && entry.pageCount > 0 ? entry.pageCount : 1;
   const page = Math.max(0, Math.min(payload.page ?? 0, pageCount - 1));
 
-  // 1. Pre-rendered / uploaded page image (the fast path).
+  // 1. A PORTABLE pre-rendered page image (http(s)/data) — the fast path. A `blob:`
+  // page is DELIBERATELY excluded here: a web streamer rasterizes a PDF to `blob:` object
+  // URLs that are valid ONLY in the document that created them, so a SYNCED doc's viewer
+  // on another device (or browser tab) physically cannot fetch them — it would render
+  // blank (THE long-standing "PDFs don't render on mobile" bug). We instead fall through
+  // to the device-portable raw source (manifest/sourceUrl → pdf.js/epub.js renders it),
+  // and only use a `blob:` page as a SAME-DEVICE last resort below (step 3b).
   const pageSrc = pages[page];
-  if (isDisplayableUrl(pageSrc)) {
+  const pageIsPortable = isDisplayableUrl(pageSrc) && !/^blob:/i.test(pageSrc ?? '');
+  if (pageIsPortable) {
     return { kind: 'image', src: pageSrc, page, pageCount, title };
   }
 
@@ -138,6 +145,14 @@ export function resolveDocRender(
       return { kind: 'pdf', src, page, pageCount, title };
     }
     return { kind: 'image', src, page, pageCount, title };
+  }
+
+  // 3b. SAME-DEVICE last resort: a `blob:` page (the producing device's own freshly
+  // rasterized cache). Reached only when there was no portable raw source above, so it's
+  // the producer previewing its OWN doc — where the blob IS loadable. A remote viewer
+  // never lands here (it always has the manifest/sourceUrl raw source).
+  if (isDisplayableUrl(pageSrc)) {
+    return { kind: 'image', src: pageSrc, page, pageCount, title };
   }
 
   // 4. A non-URL placeholder page (dev push before a render pipeline).
