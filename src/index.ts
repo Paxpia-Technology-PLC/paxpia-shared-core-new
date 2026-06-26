@@ -3,6 +3,12 @@
 // no platform UI (RN View vs web div), so it imports cleanly under both Vite and
 // Metro. Rendering lives per-platform; the MODEL lives here, once.
 export * from './accounts';
+// MEDIA: deterministic CDN object-URL resolution (avatars). `resolveAvatarUrl`
+// lifts web's `${CDN_BASE}/avatars/<id>.png` persona trick into ONE shared helper
+// so web + mobile fall back to the self-hosted object path when the backend ships
+// an empty `avatar_url` (the recurring "pfps don't render" data gap). See
+// `media/avatar.ts`.
+export * from './media';
 // Streaming: re-export the consumer-composition model. The legacy flat producer
 // model (Scene/SceneInput/InputKind) is SUPERSEDED by `layout/` and is omitted
 // here to keep `Scene` unambiguous — it stays reachable via `@paxpia/core/streaming`.
