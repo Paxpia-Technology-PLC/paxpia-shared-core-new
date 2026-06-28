@@ -595,3 +595,25 @@ export * from './social';
 // name clashes with existing exports, so re-exported at the top level; full path also
 // reachable via `@paxpia/core/analytics`. See paxpia-docs/impressions-tokens-ip-2026-06-24.md.
 export * from './analytics';
+// MESSAGING (Stream 1, 2026-06-28): the DM / group-chat domain — wire types (Thread/
+// Message + all 8 message kinds), the PURE convergence reducers (upsert/dedup/
+// reaction/read/reorder), the REST (`MessagingApi`) + realtime WS (`MessagingSocket`)
+// transport seams, and a headless React binding (`useMessaging`). Lifted out of
+// Paxpia-frontend's messaging UI + mobile's messagingApi/socket so web + mobile share
+// ONE model + merge. The rn-web views live in @paxpia/ui/messaging; the fetch + socket
+// impl is per-platform. No name clashes with existing exports. Full path also
+// reachable via `@paxpia/core/messaging`.
+export * from './messaging';
+// SEARCH (Stream 1, 2026-06-28): the unified search domain (accounts + content + DMs)
+// — normalized result rows + the `SearchApi` seam against services/search (OpenSearch
+// Search/Suggest) + a CLIENT-SIDE DM scan over loaded messaging state + a headless
+// `useSearch`. The rn-web search bar + results live in @paxpia/ui/search; the fetch
+// impl is per-platform. Full path also reachable via `@paxpia/core/search`.
+export * from './search';
+// WATCH FEED (Stream 1, 2026-06-28): the VOD / short-form feed domain — the feed-
+// service post model (`WatchPost`) + mapper + the `FeedApi` seam + headless feed/grid
+// hooks. Web (today live-only) gains a watch surface; mobile reuses the same model.
+// `WatchPost`/`FeedVideoDoc` are named to avoid the streaming `Video`/`Scene` clash.
+// The rn-web video grid + watch feed live in @paxpia/ui/feed. Full path also reachable
+// via `@paxpia/core/feed`.
+export * from './feed';
