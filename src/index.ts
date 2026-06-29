@@ -570,6 +570,11 @@ export type {
   PreviewOverlayInstance,
 } from './scheduling';
 export { previewInstance } from './scheduling';
+// The GO-LIVE CONTRACT predicate (top-level; the names are unambiguous, unlike the
+// scheduling reducers). One definition for web + mobile UI + the streaming API.
+export { canGoLiveSchedule, goLiveStartSceneId, sceneHasMediaTrack, candidateScenes } from './scheduling';
+// No-duplicate-materials predicate (#1) — UI reads it to disable an already-added material.
+export { streamHasMaterial } from './scheduling';
 // STUDIO (§1.2): the educator/streamer studio STATE MODEL + account-config SYNC,
 // lifted out of Paxpia-web so the SAME tutor config web authors can later be loaded
 // + authored by the mobile creator studio. Pure scene/assignment store reducers

@@ -80,9 +80,30 @@ export function setActive(id: string): Partial<ScenesState> {
   return { activeId: id };
 }
 
+// ── Scene-name rules (enforced UI + API, all platforms) ──────────────────────
+/** Max VISIBLE characters in a scene name (Noel, 2026-06-29: 1–12). A scene pill is a
+ *  small fixed-width chip, so a long name would overflow the live switcher. */
+export const SCENE_NAME_MAX_LEN = 12;
+
+/** Clamp a raw scene-name input to the rules: strip leading/trailing control whitespace
+ *  and cap at SCENE_NAME_MAX_LEN. May return '' for an in-progress clear — callers show
+ *  the `Scene N` fallback for an empty name. Pure; used by the reducer + the API. */
+export function clampSceneName(raw: string): string {
+  // Drop newlines/tabs (a name is single-line), keep interior spaces while typing, cap len.
+  return raw.replace(/[\r\n\t]+/g, ' ').slice(0, SCENE_NAME_MAX_LEN);
+}
+
+/** Whether a committed scene name satisfies the 1..12 rule (non-empty after trim). The
+ *  API rejects a name that fails this; the UI uses it to gate a rename commit. */
+export function isValidSceneName(name: string): boolean {
+  const n = name.trim();
+  return n.length >= 1 && n.length <= SCENE_NAME_MAX_LEN;
+}
+
 export function renameScene(id: string, name: string) {
+  const clean = clampSceneName(name);
   return (st: ScenesState): Partial<ScenesState> => ({
-    scenes: st.scenes.map((s) => (s.id === id ? { ...s, name } : s)),
+    scenes: st.scenes.map((s) => (s.id === id ? { ...s, name: clean } : s)),
   });
 }
 

@@ -125,17 +125,25 @@ export function unassignSceneFromStream(
 
 // ── timeline editing ──────────────────────────────────────────────────────────
 
-/** Append a picked (renderable) material to the class's timeline. */
+/** Whether a class's timeline already contains a given material (by material id). The UI
+ *  reads this to disable an already-added material in the picker (#1). */
+export function streamHasMaterial(stream: Pick<ScheduledStream, 'items'>, materialId: string): boolean {
+  return stream.items.some((it) => it.kind === 'material' && it.material.id === materialId);
+}
+
+/** Append a picked (renderable) material to the class's timeline. DEDUPED (#1): the SAME
+ *  material (by id) can appear at most once per class — a duplicate add is a no-op. */
 export function addMaterialItem(
   streams: ScheduledStream[],
   idGen: IdGen,
   streamId: string,
   material: MaterialMeta,
 ): ScheduledStream[] {
-  return mapItems(streams, streamId, (items) => [
-    ...items,
-    { id: idGen(), kind: 'material', order: items.length, done: null, material },
-  ]);
+  return mapItems(streams, streamId, (items) =>
+    items.some((it) => it.kind === 'material' && it.material.id === material.id)
+      ? items // already on this class's timeline → no duplicate
+      : [...items, { id: idGen(), kind: 'material', order: items.length, done: null, material }],
+  );
 }
 
 /** Append an authored overlay (a poll/quiz/vote JSON blob) to the timeline. */
