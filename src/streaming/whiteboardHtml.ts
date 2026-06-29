@@ -90,6 +90,20 @@ export function buildWhiteboardHtml(o: BuildWhiteboardHtmlOptions): string {
       'html{color-scheme:dark;}</style>'
     : '';
 
+  // WI-9 GESTURE CAPTURE: an EDITABLE (operator) board must OWN its touches so neither the
+  // host WebView nor a parent RN ScrollView scrolls while drawing — `touch-action:none` on
+  // the page + board kills the browser's native scroll/zoom panning so a 1-finger drag draws
+  // (never scrolls) and our own 2-finger pinch (the preamble) is the only pan/zoom. We also
+  // suppress text selection / callout / tap-highlight so a drag never starts a selection. A
+  // VIEWER frame keeps default touch behaviour (it isn't capturing a pen). NOTE: this is the
+  // EDIT-FRAME flag, independent of nav-mode — even when nav-mode rebuilds the frame
+  // non-editable the SHELL claims the responder, so we only need capture on the edit frame.
+  const touchStyle = editable
+    ? '<style>html,body{touch-action:none;-ms-touch-action:none;overscroll-behavior:none;' +
+      'user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent;}' +
+      '#stage,#content,#board,#strokes{touch-action:none;-ms-touch-action:none;}</style>'
+    : '';
+
   // The board lives inside #content (the SAME node frameHead/runtimePreamble transform).
   // An <svg> that FILLS #content (Bug 4 fit-to-rect): instead of a fixed SQUARE viewBox
   // letterboxed by `meet`, the viewBox is recomputed at runtime (`__fitBoard`) to the
@@ -107,6 +121,9 @@ export function buildWhiteboardHtml(o: BuildWhiteboardHtmlOptions): string {
     // The transparent-background override (empty unless the operator toggled it on) sits
     // FIRST so it wins over frameHead's opaque page fill.
     bgOverride,
+    // WI-9: the touch-capture style for an editable board (touch-action:none → the page +
+    // board own every touch; no native scroll/zoom can steal a 1-finger draw).
+    touchStyle,
     // #board fills #content; the viewBox is set to the container aspect by __fitBoard so the
     // board fills its rect at ANY aspect (Bug 4). The initial viewBox is the bare canvas; it
     // is replaced on ready + resize. preserveAspectRatio="none" is safe once the viewBox
@@ -223,12 +240,37 @@ export function buildWhiteboardHtml(o: BuildWhiteboardHtmlOptions): string {
 // The editable-author capture shim, emitted only when editable. Pointer down/move builds
 // an SVG path `d` in canvas coords; pointer up emits the finished stroke up to the host
 // (which broadcasts it, then echoes wb.add back so it paints). Gated behind WB_EDIT so a
-// viewer frame ships zero authoring code. When zoomed (transform owns pan), drawing is
-// suppressed in favour of pan — mirrors the doc gesture priority.
+// viewer frame ships zero authoring code.
+//
+// ── WI-9 SMART GESTURE ARBITRATION ─────────────────────────────────────────────
+// The board OWNS its touches so neither the WebView nor a parent RN ScrollView scrolls
+// while drawing. Arbitration by ACTIVE POINTER COUNT, not by zoom level:
+//   • 1 active pointer  → DRAW. preventDefault + setPointerCapture so the page/host can't
+//     scroll or hand the gesture to a parent; non-passive listeners so preventDefault works
+//     (belt-and-braces with `touch-action:none` on the page/board). stopPropagation so the
+//     preamble's document pan handler never also fires.
+//   • 2 active pointers → PAN/ZOOM (even in draw mode, per Noel). The in-progress stroke is
+//     ABANDONED the instant a 2nd finger lands (preview removed, never reported), and the
+//     two fingers drive a self-contained pinch-zoom-about-midpoint + two-finger PAN via the
+//     shared `__clampZ`/`__clampPan`/`__localVp` viewport helpers — so pan works at ANY
+//     scale (not only when already zoomed). Drawing is suspended until ALL fingers lift
+//     (a lingering single finger after a pinch must NOT resume a stray stroke).
+// The old "pan-when-zoomed / draw-when-fit" single-pointer heuristic is RETIRED: a single
+// finger ALWAYS draws (the pen owns 1 finger), two fingers ALWAYS navigate. (ALWAYS_DRAW is
+// thus implied by the 1-finger rule and kept only for clarity / the annotation contract.)
 function WB_EDIT(editable: boolean, penColor: string, penWidth: number, alwaysDraw: boolean): string {
   if (!editable) return '/* viewer / nav mode: no authoring capture */';
   return [
     '(function(){',
+    // The EDIT frame owns ALL gesture arbitration (below). Neutralize the shared preamble's
+    // DOCUMENT-level TOUCH pinch + the native double-tap so they can\'t double-act with our
+    // pointer-based 1-finger-draw / 2-finger-pan-zoom logic: a CAPTURE-phase document
+    // touchmove/touchstart that stops the gesture from reaching the preamble\'s bubble-phase
+    // pinch listener (pointer stopPropagation can\'t stop the separate touch stream). Our
+    // pointer handlers still fire (separate event type), so this only mutes the preamble\'s
+    // duplicate touch pinch — no behaviour is lost, the double-zoom is prevented.
+    'document.addEventListener("touchstart",function(e){if(e.touches&&e.touches.length>=2)e.stopPropagation();},{capture:true,passive:false});',
+    'document.addEventListener("touchmove",function(e){if(e.touches&&e.touches.length>=2){if(e.cancelable)e.preventDefault();e.stopPropagation();}},{capture:true,passive:false});',
     'var svg=document.getElementById("board");var cur=null,curD="",prev=document.createElementNS(SVGNS,"path");',
     'var ALWAYS_DRAW=' + JSON.stringify(alwaysDraw) + ';',
     'prev.setAttribute("fill","none");prev.setAttribute("stroke-linecap","round");prev.setAttribute("stroke-linejoin","round");',
@@ -239,20 +281,53 @@ function WB_EDIT(editable: boolean, penColor: string, penWidth: number, alwaysDr
     // screen px → canvas coords via the svg CTM (accounts for the fit + the CSS transform).
     'function toCanvas(cx,cy){try{var ctm=svg.getScreenCTM();if(!ctm)return null;var pt=svg.createSVGPoint();pt.x=cx;pt.y=cy;var p=pt.matrixTransform(ctm.inverse());return {x:p.x,y:p.y};}catch(_){return null;}}',
     'function fmt(n){return Math.round(n*100)/100;}',
-    // Draw-when-fit / pan-when-zoomed for the placed board; ALWAYS draw for an annotation
-    // (the doc owns zoom, so a stroke must start regardless of the annotation\'s scale).
-    // DRAW-vs-PAN (#bug): once we commit to a stroke, OWN the gesture — stopPropagation
-    // so the SHARED preamble's document-level pan handler (which grabs on pointerdown when
-    // __vp.s>1) does NOT also fire and translate the content. Without this, a draw while
-    // zoomed in DRAW mode both drew AND panned (pan dominated → "draw just pans"). The
-    // guard above already lets a pan through when NOT drawing (zoomed placed-board nav), so
-    // pan-when-intended still works; we only seize the pointer when a stroke actually starts.
-    'svg.addEventListener("pointerdown",function(e){if(!ALWAYS_DRAW&&__vp.s>1.01)return;var p=toCanvas(e.clientX,e.clientY);if(!p)return;e.stopPropagation();cur=e.pointerId;curD="M"+fmt(p.x)+" "+fmt(p.y);prev.setAttribute("d",curD);prev.setAttribute("stroke",COLOR);prev.setAttribute("stroke-width",String(WIDTH));__gel().appendChild(prev);},{passive:true});',
-    'svg.addEventListener("pointermove",function(e){if(cur===null||e.pointerId!==cur)return;var p=toCanvas(e.clientX,e.clientY);if(!p)return;curD+=" L"+fmt(p.x)+" "+fmt(p.y);prev.setAttribute("d",curD);},{passive:true});',
+    // ── active-pointer registry + the 2-finger pinch/pan anchor ──────────────────
+    'var PTRS={},NP=0;var pinch=null;var suspendDraw=false;',
+    'function ptList(){var a=[];for(var k in PTRS){if(PTRS.hasOwnProperty(k))a.push(PTRS[k]);}return a;}',
+    // Abandon any in-progress stroke WITHOUT reporting it (a 2nd finger landed → navigate).
+    'function abandonStroke(){if(cur!==null){cur=null;curD="";try{if(prev.parentNode)prev.parentNode.removeChild(prev);}catch(_){}}}',
+    // Begin a 1-finger stroke at a screen point.
+    'function beginStroke(e){var p=toCanvas(e.clientX,e.clientY);if(!p)return;cur=e.pointerId;curD="M"+fmt(p.x)+" "+fmt(p.y);prev.setAttribute("d",curD);prev.setAttribute("stroke",COLOR);prev.setAttribute("stroke-width",String(WIDTH));__gel().appendChild(prev);try{svg.setPointerCapture(e.pointerId);}catch(_){}}',
+    // Seed the 2-finger pinch/pan anchor from the two live pointers.
+    'function startPinch(){var ps=ptList();if(ps.length<2)return;var a=ps[0],b=ps[1];pinch={d:Math.hypot(a.x-b.x,a.y-b.y),mx:(a.x+b.x)/2,my:(a.y+b.y)/2,s:__vp.s,x:__vp.x,y:__vp.y};}',
+    // Run one 2-finger update: zoom by the distance ratio about the gesture midpoint AND pan
+    // by the midpoint translation — both folded through the shared clamps → reported up as a
+    // local transform (host follows / takes over), so 2-finger nav matches the doc model.
+    'function runPinch(){var ps=ptList();if(ps.length<2||!pinch)return;var a=ps[0],b=ps[1];var d=Math.hypot(a.x-b.x,a.y-b.y);var mx=(a.x+b.x)/2,my=(a.y+b.y)/2;' +
+      'var ns=__clampZ(pinch.s*(pinch.d>0?(d/pinch.d):1));' +
+      // pan = the base pan + the midpoint drift since the gesture began (so two fingers slide
+      // the board), centre-origin like the preamble pan math.
+      'var nx=pinch.x+(mx-pinch.mx),ny=pinch.y+(my-pinch.my);' +
+      '__localVp(__clampPan(ns,nx,ny));}',
+    // POINTERDOWN: register the pointer; arbitrate by count. 1st → draw; 2nd → abandon the
+    // stroke + start pinch/pan; ≥3 → keep navigating (use the first two). Capture the gesture
+    // (preventDefault/stopPropagation) so the page + any parent ScrollView never scroll.
+    'svg.addEventListener("pointerdown",function(e){if(e.cancelable)e.preventDefault();e.stopPropagation();' +
+      'PTRS[e.pointerId]={id:e.pointerId,x:e.clientX,y:e.clientY};NP=ptList().length;' +
+      'if(NP>=2){abandonStroke();suspendDraw=true;startPinch();}' +
+      'else if(NP===1&&!suspendDraw){beginStroke(e);}' +
+      '},{passive:false});',
+    // POINTERMOVE: update the pointer's position, then either extend the stroke (1 finger) or
+    // run the pinch/pan (≥2). preventDefault so nothing native scrolls during the gesture.
+    'svg.addEventListener("pointermove",function(e){if(!PTRS[e.pointerId])return;if(e.cancelable)e.preventDefault();e.stopPropagation();' +
+      'PTRS[e.pointerId].x=e.clientX;PTRS[e.pointerId].y=e.clientY;' +
+      'if(ptList().length>=2){runPinch();return;}' +
+      'if(cur!==null&&e.pointerId===cur){var p=toCanvas(e.clientX,e.clientY);if(!p)return;curD+=" L"+fmt(p.x)+" "+fmt(p.y);prev.setAttribute("d",curD);}' +
+      '},{passive:false});',
+    // Finish a stroke (report it up) — only when a real 1-finger stroke completes.
     'function finish(){if(cur===null)return;cur=null;try{if(prev.parentNode)prev.parentNode.removeChild(prev);}catch(_){}if(curD.indexOf("L")<0){curD="";return;}var stroke={id:"s"+Date.now()+"_"+Math.floor(Math.random()*1e6),d:curD,color:COLOR,width:WIDTH};curD="";report({e:"wb.draw",stroke:stroke});}',
-    'svg.addEventListener("pointerup",finish,{passive:true});',
-    'svg.addEventListener("pointercancel",finish,{passive:true});',
-    'svg.addEventListener("pointerleave",finish,{passive:true});',
+    // POINTERUP/CANCEL: drop the pointer; recompute count. 2→1 leaves the lingering finger
+    // INERT (suspendDraw stays true until ALL fingers lift, so it can\'t start a stray stroke).
+    // When the LAST finger lifts: finish a pending 1-finger stroke + clear pinch/suspend.
+    'function up(e){if(!PTRS[e.pointerId])return;try{svg.releasePointerCapture(e.pointerId);}catch(_){}delete PTRS[e.pointerId];var n=ptList().length;' +
+      'if(n>=2){startPinch();}' +                                  // ≥2 remain → re-seed the anchor
+      'else if(n===1){pinch=null;}' +                              // dropped to 1 → no nav, no draw (suspended)
+      'else{finish();pinch=null;suspendDraw=false;}' +            // all up → finish + reset
+      '}',
+    'svg.addEventListener("pointerup",up,{passive:false});',
+    'svg.addEventListener("pointercancel",up,{passive:false});',
+    // pointerleave is NOT treated as up: with pointer capture a single drag stays captured, and
+    // a multi-touch leave would spuriously reset. (Capture release happens on real up/cancel.)
     '})();',
   ].join('\n');
 }

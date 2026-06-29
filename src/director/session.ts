@@ -162,6 +162,11 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
   const overlayGens = new Map<string, number>();
   // Unsubscribe for the scenes-store subscription that re-broadcasts on scene swap.
   let scenesUnsub: (() => void) | null = null;
+  // Unsubscribe for the media seam's "published video track lost" safety-net hook.
+  let videoLostUnsub: (() => void) | null = null;
+  // Guards against re-entrant recovery (a track-lost event firing while we're already
+  // re-provisioning + republishing).
+  let recoveringVideo = false;
   let disableAggregator: (() => void) | null = null;
   // In-memory preload cache for the running class's materials (id → rendered doc).
   let preloadCache: DirectorPreloadCache = deps.newPreloadCache();
@@ -193,6 +198,54 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
       compositor.upsertItem(item, media.mediaSourceFor(item.id));
     }
   }
+  /** RE-PUBLISH the compositor's CURRENT output video track to the SFU after a scene
+   *  hot-swap (or a recovery). On a platform whose compositor output track is STABLE
+   *  across scenes (web canvas), `media.republishVideoTrack` is absent and this is a
+   *  correct no-op — the already-published track keeps carrying the new scene content.
+   *  On RN's single-source passthrough the output track CHANGES per scene, so this swaps
+   *  the new camera track onto the existing publication's sender in place (the platform
+   *  uses `replaceTrack` — no unpublish/publish black window). Null track ⇒ the new scene
+   *  has no video; the platform decides (mute/keep). Best-effort: a republish failure must
+   *  never crash the live session (the safety net + next switch can recover). */
+  async function republishOutputTrack(): Promise<void> {
+    if (!room || state.audioOnly || !compositor) return;
+    if (!media.republishVideoTrack) return; // stable-track platform (web) → nothing to do
+    const vtrack = compositor.getOutputTrack();
+    try {
+      await media.republishVideoTrack(room, vtrack ?? null);
+    } catch {
+      /* best-effort — the safety net / next scene switch can recover */
+    }
+  }
+
+  /** SAFETY NET — the published video track was lost unexpectedly (track `ended`/`mute`,
+   *  transceiver gone, or the compositor output became null). RE-PROVISION the active
+   *  scene's media (the camera may have been stopped/dropped), re-seed the compositor so
+   *  its output points at a LIVE track again, then RE-PUBLISH that track back to the SFU —
+   *  so a lost feed always heals back to LiveKit instead of only showing in the local
+   *  preview. Re-entrancy-guarded; best-effort; only meaningful while live + video. */
+  async function recoverVideoTrack(): Promise<void> {
+    if (recoveringVideo) return;
+    if (state.status !== 'live' || state.audioOnly || !room || !compositor) return;
+    recoveringVideo = true;
+    try {
+      const sceneId = activeSceneId();
+      try {
+        await media.provisionScene(sceneId, (msg) => set({ provisioning: msg }));
+      } catch {
+        /* a denied/failed re-acquire still lets us try whatever source is live */
+      } finally {
+        set({ provisioning: null });
+      }
+      // Re-bind the (possibly fresh) sources to the compositor, then republish its output.
+      seedCompositorScene(sceneId);
+      compositor.setActiveScene(sceneId);
+      await republishOutputTrack();
+    } finally {
+      recoveringVideo = false;
+    }
+  }
+
   /** The active scene's id (off the store). */
   function activeSceneId(): string {
     return readActiveScene(scenes.getState()).id;
@@ -336,6 +389,12 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
         compositor.start();
         const vtrack = compositor.getOutputTrack();
         if (vtrack) await media.publishVideoTrack(room, vtrack);
+        // SAFETY NET: if the published video track is ever lost (camera stopped, track
+        // `ended`/`mute`, transceiver gone), re-provision + republish a live track back
+        // to the SFU — never just leave viewers on a frozen feed (Noel's "renegotiate
+        // back to LiveKit, not just the local preview"). Web omits the hook (stable
+        // canvas track), so optional-chaining = no-op there.
+        videoLostUnsub = media.onVideoTrackLost?.(() => void recoverVideoTrack()) ?? null;
       }
 
       // Mic: best-effort with video, REQUIRED in audio-only (the media seam throws).
@@ -380,22 +439,35 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
         // Rebuild the live DOC slot from the NEW scene's served-doc fill (or clear it).
         const nextDoc = docForSceneSwitch(nextId, state.servedDocs);
         set({ activeDoc: nextDoc, docPresenter: nextDoc ? state.docPresenter : null });
-        // Tell the compositor to hot-swap (output track unchanged; only content does);
-        // re-seed its scene + bindings so a newly-composed scene paints correctly.
+        // Tell the compositor to hot-swap. On web the output track is STABLE (only its
+        // content changes); on RN's single-source passthrough the output track CHANGES to
+        // the new scene's primary camera — so after the new media is provisioned we must
+        // RE-PUBLISH that track to the SFU (otherwise the SFU keeps the OLD, now-stale
+        // track and the viewer's video drops on every scene switch — WI-8). Re-seed the
+        // scene + bindings first so a newly-composed scene paints correctly.
         seedCompositorScene(nextId);
         compositor?.setActiveScene(nextId);
-        // Acquire the new scene's media (best-effort), then re-broadcast layout + overlays.
+        // Acquire the new scene's media, THEN republish the (possibly changed) output track
+        // and re-broadcast layout + overlays. Provision is sequenced (awaited) before the
+        // republish so the new camera stream is live when we grab the compositor output —
+        // closing the "fire-and-forget provision races the republish" gap.
         void media
           .provisionScene(nextId, (msg) => set({ provisioning: msg }))
-          .catch((err) =>
+          .catch((err) => {
             set({
               provisioning: null,
               error: err instanceof Error ? `Scene input not started — ${err.message}` : null,
-            }),
-          )
-          .finally(() => {
-            // The provision may have acquired new sources — rebind them to the compositor.
+            });
+          })
+          .then(async () => {
+            // The provision may have acquired new sources — rebind them to the compositor,
+            // then swap the new output track onto the existing LiveKit publication in place
+            // (RN: replaceTrack, no black window; web: no-op, stable track).
             seedCompositorScene(nextId);
+            await republishOutputTrack();
+          })
+          .finally(() => {
+            set({ provisioning: null });
             broadcastLiveSync();
             broadcastScene();
           });
@@ -434,6 +506,8 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
       broadcastLiveSync();
       broadcastScene();
     } catch (e) {
+      videoLostUnsub?.();
+      videoLostUnsub = null;
       compositor?.stop();
       compositor = null;
       scenesUnsub?.();
@@ -459,6 +533,9 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
         /* best-effort */
       }
     }
+    videoLostUnsub?.();
+    videoLostUnsub = null;
+    recoveringVideo = false;
     scenesUnsub?.();
     scenesUnsub = null;
     disableAggregator?.();

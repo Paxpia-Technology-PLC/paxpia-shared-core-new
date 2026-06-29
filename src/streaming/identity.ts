@@ -63,3 +63,41 @@ export function streamerDisplayLabel(
 export function hasPublicIdentity(s: PublicStreamerIdentity): boolean {
   return !!(s.username || s.displayName);
 }
+
+// ── STREAM-BY-USERNAME (client-side resolution) ──────────────────────────────
+// "Open/watch a live stream by @username." The active-rooms listing already carries
+// `streamer_username` per room (GET /api/v1/live/rooms), so we resolve a handle to a
+// live room ENTIRELY on the client — no backend `?streamer_username=` filter needed
+// for the MVP (that's a future scale optimization; see the docs / GAPS). Pure, so
+// web (LiveRoom) + mobile (LiveRoomVM) feed it whatever username accessor matches
+// their already-mapped room shape.
+
+/** Strip a single leading `@` and lower-case + trim, so `@Alice`, `alice ` and
+ *  `ALICE` all compare equal. Empty/whitespace-only normalizes to ''. */
+export function normalizeUsername(username: string | null | undefined): string {
+  if (!username) return '';
+  return username.trim().replace(/^@+/, '').trim().toLowerCase();
+}
+
+/** Resolve a `@username` to its currently-active room from an in-hand rooms list.
+ *
+ *  GENERIC over the room shape: the caller supplies a `usernameOf` accessor that
+ *  reads the room's streamer handle (web `r.identity.username`, mobile
+ *  `r.streamerUsername`, or a raw payload's `streamer_username`). Case-insensitive,
+ *  tolerant of a leading `@`. Returns the FIRST matching room, or `null` when the
+ *  user isn't live (or the handle is blank).
+ *
+ *  Pure + platform-free: no fetch, no navigation — the platform decides what to do
+ *  with the resolved room (open the viewer) or its absence (show "not live"). */
+export function findActiveRoomByUsername<R>(
+  rooms: readonly R[],
+  username: string | null | undefined,
+  usernameOf: (room: R) => string | null | undefined,
+): R | null {
+  const target = normalizeUsername(username);
+  if (!target) return null;
+  for (const room of rooms) {
+    if (normalizeUsername(usernameOf(room)) === target) return room;
+  }
+  return null;
+}

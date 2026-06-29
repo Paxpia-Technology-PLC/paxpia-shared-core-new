@@ -9,6 +9,11 @@ export * from './svgClock';
 export * from './consume';
 export * from './target';
 export * from './previewCompat';
+// PARTICIPATION AUTHORING (WI-7e): the pure create/edit half of poll/quiz/vote-button —
+// `ParticipationDraft` + builders (`newPollDraft`/…) + mutators + `validateParticipationDraft`
+// + the `draft → payload`/`draft → overlay-blob` finalizers. Pure (no UI/platform); the
+// runtime/voting half stays in `kinds/participation.ts`. Consumed by `@paxpia/ui`'s editor.
+export * from './authoring';
 // WHITEBOARD-ON-DOC ANNOTATION (Message D item 2): the doc-scoped board-id derivation
 // (`wbann:<docId>:<page>` single / `wbann:<docId>` scroll) + the `DocAnnotationState`
 // descriptor. The annotation board IS a whiteboard board (same wire/store/module);

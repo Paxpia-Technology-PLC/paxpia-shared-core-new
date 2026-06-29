@@ -44,6 +44,13 @@ export * from './docHtml';
 // only screenshot. Strokes ride the shared `overlay` topic (overlays/whiteboard.ts), not
 // a private data plane. buildWhiteboardHtml is the single entry the platform hosts call.
 export * from './whiteboardHtml';
+// The SHARED OPERATOR BOARD STORE (WI-10): a module-level map keyed by the STABLE board
+// id (`wb_tile_<itemId>`) holding the operator's converged `WbBoardState` (strokes+gen)
+// + a per-board redo stack, with subscribe/get/apply + authoring helpers. Survives a tile
+// unmount on a scene switch so the operator's strokes PERSIST across scenes identically on
+// web + mobile (parity with the web viewer). Both platforms' studio whiteboard hooks bind
+// to it instead of component-local state.
+export * from './operatorBoardStore';
 // The UNIFIED room-join handshake: canonical viewer Room/connect options (the
 // adaptiveStream-off churn fix, made the single source of truth), the
 // connect/reuse/defer-teardown reconciler (focus-blip vs real navigation), the

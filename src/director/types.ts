@@ -187,6 +187,27 @@ export interface DirectorMedia {
   /** Publish the composited 9:16 video OUTPUT track (the compositor's
    *  `getOutputTrack()`) to the room. No-op in audio-only (no track). */
   publishVideoTrack(room: DirectorRoomHandle, track: unknown): Promise<void>;
+  /** RE-PUBLISH the video OUTPUT track after a scene HOT-SWAP — only meaningful on a
+   *  platform whose compositor output track CHANGES across scenes (RN's single-source
+   *  passthrough: a different scene ⇒ a different camera track). The platform should swap
+   *  the new track onto the EXISTING publication's sender in place (LiveKit
+   *  `LocalTrack.replaceTrack` / `RTCRtpSender.replaceTrack`) — NO unpublish-then-publish
+   *  black window, the SFU keeps the same publication and renegotiates the track. Web's
+   *  canvas output track is STABLE across scene switches (the same track is already
+   *  published every frame reflects the new scene), so web OMITS this — the brain calls it
+   *  via optional-chaining, so an absent impl is a correct no-op. `track` null ⇒ the new
+   *  scene has no video (drop to no-video); the platform decides whether to mute/unpublish.
+   *  OPTIONAL — only RN-style passthrough compositors implement it. */
+  republishVideoTrack?(room: DirectorRoomHandle, track: unknown): Promise<void>;
+  /** Register a SAFETY-NET callback the platform invokes when the PUBLISHED video track is
+   *  lost unexpectedly (track `ended`/`mute`, transceiver gone, or the output track became
+   *  null) — so the brain can re-provision the active scene + re-publish a live camera track
+   *  back to the SFU rather than leaving viewers on a frozen/black feed. The platform owns
+   *  the detection (it holds the LiveKit publication + RTCRtpSender); the brain owns the
+   *  RECOVERY (re-provision active scene → grab the fresh compositor output → republish).
+   *  Returns an unsubscribe. OPTIONAL — web's stable canvas track never ends mid-stream, so
+   *  web OMITS it; the brain wires it via optional-chaining. */
+  onVideoTrackLost?(cb: () => void): () => void;
   /** Publish the mic. Best-effort in video mode (a denied mic leaves a video-only
    *  stream); REQUIRED in audio-only (THROWS when absent — it's the whole stream). */
   publishMic(room: DirectorRoomHandle, audioOnly: boolean): Promise<void>;

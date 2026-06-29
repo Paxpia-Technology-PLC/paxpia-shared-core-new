@@ -277,6 +277,24 @@ export {
 // screenshot. Strokes ride the shared `overlay` topic, not a private data plane.
 export type { BuildWhiteboardHtmlOptions } from './streaming/whiteboardHtml';
 export { buildWhiteboardHtml } from './streaming/whiteboardHtml';
+// THE SHARED OPERATOR BOARD STORE (WI-10) — a module-level map keyed by the STABLE board
+// id (`wb_tile_<itemId>`) holding the operator's converged `WbBoardState` (strokes + gen)
+// + a per-board redo stack. Survives a placed-tile unmount on a scene switch, so the
+// operator's strokes PERSIST across scenes identically on web + mobile (parity with the web
+// viewer's converged `ViewerState.boards[boardId]`). Both platforms' studio whiteboard
+// hooks read/write this instead of component-local state; the authoring helpers fold into
+// the store via the shared `applyWb` and return the wire msg to broadcast.
+export {
+  getOperatorBoard,
+  subscribeOperatorBoard,
+  applyOperatorBoard,
+  operatorAddStroke,
+  operatorClear,
+  operatorUndo,
+  operatorRedo,
+  operatorCanRedo,
+  resetOperatorBoard,
+} from './streaming/operatorBoardStore';
 // Doc-viewer local takeover + resync state machine (scene changes absolute;
 // doc-source changes deferrable during takeover). Web + mobile share it.
 export type {
@@ -299,6 +317,11 @@ export {
   streamerIdentityFromRoom,
   streamerDisplayLabel,
   hasPublicIdentity,
+  // STREAM-BY-USERNAME: resolve a `@handle` to its active room from the in-hand
+  // live-rooms listing (client-side; no backend filter needed for MVP). Pure +
+  // generic over the room shape via a username accessor. Web + mobile share it.
+  normalizeUsername,
+  findActiveRoomByUsername,
 } from './streaming/identity';
 // UNIFIED room-join handshake: canonical viewer Room/connect options (the
 // adaptiveStream-off decoder-churn fix as the single source of truth), the

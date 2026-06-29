@@ -448,6 +448,124 @@ const sceneWB: Scene = {
   eq(session.getState().servedDocs, {}, 'endLive clears served docs');
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// 5. WI-8 — VIDEO TRACK LIFECYCLE: scene-switch republish + lost-track safety net
+//    (the brain must keep the LiveKit video publication alive across a scene switch on
+//     a platform whose compositor output track CHANGES per scene — RN — and must
+//     RENEGOTIATE a lost track back to the SFU, not just the local preview.)
+// ════════════════════════════════════════════════════════════════════════════
+{
+  // Two CAMERA scenes whose compositor output is a DIFFERENT token per scene (the RN
+  // single-source passthrough). The fake compositor returns the active scene's token.
+  const camA: Scene = { id: 'CA', name: 'CA', items: [lItem('ca-cam', 'camera', 0)] };
+  const camB: Scene = { id: 'CB', name: 'CB', items: [lItem('cb-cam', 'camera', 0)] };
+
+  // A scriptable scenes store (same shape as section 4's helper).
+  let st: ScenesState = { scenes: [camA, camB], activeId: 'CA' };
+  const subs = new Set<(s: ScenesState, prev: ScenesState) => void>();
+  const scenesHandle = {
+    getState: () => st,
+    setState: (p: Partial<ScenesState>) => { const prev = st; st = { ...st, ...p }; for (const cb of subs) cb(st, prev); },
+    subscribe: (cb: (s: ScenesState, prev: ScenesState) => void) => { subs.add(cb); return () => subs.delete(cb); },
+  };
+  const switchScene = (id: string) => { const prev = st; st = { ...st, activeId: id }; for (const cb of subs) cb(st, prev); };
+
+  // The fake compositor: its output token is the active scene's primary cam id (so it
+  // CHANGES per scene, like RN). Drive `setActiveScene` so it tracks the brain's switch.
+  let compActive = 'CA';
+  const compositor = {
+    setScene: () => {},
+    setActiveScene: (id: string) => { compActive = id; },
+    upsertItem: () => {},
+    removeItem: () => {},
+    getOutputTrack: () => (compActive === 'CA' ? 'track-CA' : 'track-CB'),
+    start: () => {},
+    stop: () => {},
+  };
+
+  // Recording media seam WITH the new WI-8 hooks.
+  const published: unknown[] = [];     // publishVideoTrack calls (go-live first publish)
+  const republished: unknown[] = [];   // republishVideoTrack calls (scene switch / recovery)
+  let provisionCount = 0;
+  let lostCb: (() => void) | null = null;
+  const fakeRoom2: DirectorRoomHandle = { name: 'room-2' };
+  // A minimal no-op transport (this section only exercises the media seam, not overlays).
+  const transport2: DirectorTransport = {
+    publishLiveSync: () => {},
+    publishScene: () => {},
+    publishManifest: () => {},
+    createAndActivate: () => {},
+    closeOverlay: () => {},
+    revealOverlay: () => {},
+    refreshOverlay: () => 1,
+    enableAggregator: () => () => {},
+    onOverlayChanged: () => () => {},
+    onResults: () => () => {},
+    onParticipantConnected: () => () => {},
+    dispose: () => {},
+  };
+  // A minimal preload cache (no materials are warmed in this section).
+  const cache2: DirectorPreloadCache = (() => {
+    const m = new Map<string, { id: string; doc: never; bytes: number }>();
+    return { has: (id: string) => m.has(id), get: (id: string) => m.get(id) as never, set: (id: string, e: { id: string; doc: never; bytes: number }) => void m.set(id, e) };
+  })();
+  const media2: DirectorMedia = {
+    provisionScene: async () => { provisionCount += 1; return true; },
+    sceneHasMedia: () => true,
+    openRoom: async () => ({ roomName: 'room-2', room: fakeRoom2 }),
+    mediaSourceFor: () => ({}),
+    publishVideoTrack: async (_r, t) => { published.push(t); },
+    republishVideoTrack: async (_r, t) => { republished.push(t); },
+    onVideoTrackLost: (cb) => { lostCb = cb; return () => { if (lostCb === cb) lostCb = null; }; },
+    publishMic: async () => {},
+    buildTransport: () => transport2,
+    closeRoom: async () => {},
+  };
+  const deps2: DirectorDeps = {
+    media: media2,
+    compositorFactory: () => compositor,
+    materials: { baseUrl: '', fetch: async () => ({ ok: true, status: 200, json: async () => ({}) }), authHeader: () => ({}) },
+    materialsRuntime: {
+      buildDocPayload: async (m: DirectorMaterial) => ({ title: m.id, pages: ['u'], page: 0, sourceUrl: 'u' }),
+      warmManifest: async () => {},
+    },
+    newPreloadCache: () => cache2,
+    scenes: scenesHandle as never,
+    scheduling: { getState: () => ({ scheduled: [], activeStreamId: null }), setState: () => {}, subscribe: () => () => {}, setActiveStream: () => {} },
+    isAuthed: () => true,
+  };
+
+  const s2 = createDirectorSession(deps2);
+  await s2.goLive('Cam class', 'public'); // VIDEO mode (audioOnly defaults false)
+  eq(s2.getState().status, 'live', 'WI-8: video session reaches live');
+  eq(published.length, 1, 'WI-8: go-live publishes the initial scene output track once');
+  eq(published[0], 'track-CA', 'WI-8: the first published track is scene CA output');
+  ok(lostCb !== null, 'WI-8: the brain wired the lost-track safety net on go-live');
+
+  // HOT-SWAP to scene CB → the compositor output token changes; the brain MUST republish
+  // the NEW track to the SFU (the WI-8 fix). The switch broadcasts in a `.then/.finally`
+  // after the async provision, so flush microtasks.
+  const provBefore = provisionCount;
+  switchScene('CB');
+  await new Promise((r) => setTimeout(r, 0));
+  ok(provisionCount > provBefore, 'WI-8: a scene switch re-provisions the new scene media');
+  eq(republished.length, 1, 'WI-8: a scene switch RE-PUBLISHES the new output track (no dropped feed)');
+  eq(republished[republished.length - 1], 'track-CB', 'WI-8: the republished track is the NEW scene (CB) output');
+
+  // SAFETY NET — simulate the published track being lost (ended/mute). The brain must
+  // re-provision the active scene AND republish a live track back to the SFU.
+  const reBefore = republished.length;
+  const provBefore2 = provisionCount;
+  lostCb?.();
+  await new Promise((r) => setTimeout(r, 0));
+  ok(provisionCount > provBefore2, 'WI-8: a lost track triggers a re-provision of the active scene');
+  ok(republished.length > reBefore, 'WI-8: a lost track RENEGOTIATES the track back to the SFU (not just preview)');
+  eq(republished[republished.length - 1], 'track-CB', 'WI-8: recovery republishes the active scene (CB) live track');
+
+  await s2.endLive();
+  eq(s2.getState().status, 'idle', 'WI-8: endLive returns to idle');
+}
+
 // ── report ───────────────────────────────────────────────────────────────────
 if (failures.length > 0) {
   console.error(`FAIL — ${failures.length} failed, ${passed} passed:`);
