@@ -532,6 +532,22 @@ export type {
   MediaSourceHandle,
   OutputVideoTrack,
 } from './compositor';
+// CANONICAL scene→output placement math (WI-17). `composeScene`/`sceneNeedsComposite`/
+// `tileDraw` are the ONE pure source the mobile compositor (+ native) place tiles by,
+// so a mobile-published scene matches the web composite instead of stretching the
+// primary full-frame. Named exports (these are NEW symbols, no collision with the
+// `fitToBox`/`Scene` geometry already top-level from `layout/`).
+export {
+  composeScene,
+  sceneNeedsComposite,
+  isFullFrameRect,
+  mediaItemsInDrawOrder,
+  tileDraw,
+  defaultCompositeOutput,
+  DEFAULT_COMPOSITE_HEIGHT,
+  type CompositePlan,
+  type TilePlacement,
+} from './compositor/layout';
 // SCHEDULING (§1.3): the SCHEDULE-as-TIMELINE class model (ordered timeline of
 // materials + inline overlays, per-class scene assignment, live-run done-flags)
 // graduated out of the web `store/studio.ts` so web + mobile share ONE scheduling

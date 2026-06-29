@@ -32,3 +32,21 @@ export {
   type FitMode,
   type Rect,
 } from '../layout/types';
+
+// THE CANONICAL scene→output placement math (WI-17) — the ONE pure function a
+// platform compositor consumes to place each media tile at its authored rect on the
+// 9:16 output (so a MOBILE-published scene matches the web composite, not stretched
+// full-frame). Web `studio/compositor.ts` should adopt `composeScene`/`tileDraw` as
+// a follow-up (its `drawItem` already makes the identical `rectToPixels`+`fitToBox`
+// call this consolidates).
+export {
+  composeScene,
+  sceneNeedsComposite,
+  isFullFrameRect,
+  mediaItemsInDrawOrder,
+  tileDraw,
+  defaultCompositeOutput,
+  DEFAULT_COMPOSITE_HEIGHT,
+  type CompositePlan,
+  type TilePlacement,
+} from './layout';
