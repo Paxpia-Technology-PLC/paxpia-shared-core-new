@@ -38,12 +38,16 @@ export type OverlayControlAction =
   | 'close' // stop accepting responses (active → closed); tallies freeze
   | 'reveal' // reveal answer/results (e.g. quiz correct option) (closed → revealed)
   | 'next' // advance to the next staged overlay / clear the active one
+<<<<<<< HEAD
   | 'reset' // STREAM G3: authoritative FULL-ROOM round reset — bump gen, CLEAR all
   //          persisted rows for the prior round (Redis/in-memory), re-open at the new gen,
   //          and re-broadcast overlay.changed + an empty overlay.results so EVERY viewer +
   //          the streamer converge to a fresh tally. Distinct from `activate` (which the
   //          web lane overloaded for reset) so a backend bot can implement reset as a
   //          single authoritative transaction (`DEL room:overlay:gen rows`), not a re-create.
+=======
+  | 'reset' // clear the current round's votes: DEL prior gen's rows + open empty gen+1
+>>>>>>> da3b0de (--amend)
   | 'request_state'; // (any participant) ask the bot to replay current state to me
 
 /** STREAMER control message. `overlay` is required for `create`; `overlayId` for
@@ -292,6 +296,7 @@ export function buildResultsMsg(
   };
 }
 
+<<<<<<< HEAD
 // ── Durable vote snapshot (Stream G3 — the Redis-backed authoritative tally) ──────
 // The web lane self-aggregates in the streamer's TAB (an in-memory `votesByRound` Map),
 // so a streamer reload / scene rebuild lost the tally and the dash desynced. The durable
@@ -307,10 +312,22 @@ export function buildResultsMsg(
  *  `rows` is one entry per stable identity (vote-once; last-choice-wins on re-vote), so the
  *  service can rebuild `tally(rows)` AND answer a per-identity `mine` from the SAME record.
  *  A RESET deletes the prior gen's record and writes a fresh empty one at gen+1. */
+=======
+// ── durable snapshot projection ──────────────────────────────────────────────
+// A VoteSnapshot is the persisted shape a Redis-backed overlays/vote service holds
+// for one round (room + overlayId + gen → rows). The web app's in-tab aggregator
+// builds the SAME shape so a results tick or a per-viewer "mine" replay is computed
+// identically whether it comes from this projection or an eventual server service —
+// the swap to the service becomes a transport change, not a logic one.
+
+/** One round's persisted responses, keyed by room+overlay+gen. `rows` is one entry
+ *  per stable identity (latest choice wins), exactly as the durable store holds it. */
+>>>>>>> da3b0de (--amend)
 export interface VoteSnapshot {
   roomName: string;
   overlayId: string;
   gen: number;
+<<<<<<< HEAD
   /** One committed vote per stable identity (the dedup key). */
   rows: OverlayResponseRow[];
 }
@@ -343,6 +360,30 @@ export function resultsFromSnapshot(snap: VoteSnapshot): OverlayResultsMsg {
  *  `mine` a targeted replay carries, so "you voted" survives a reload). Pure. */
 export function mineFromSnapshot(snap: VoteSnapshot, stableIdentity: string): string | undefined {
   return snap.rows.find((r) => r.identity === stableIdentity)?.choice;
+=======
+  rows: OverlayResponseRow[];
+  /** Phase to stamp on a projected results tick. A live tally during voting is
+   *  'active'; pass 'revealed' when projecting a revealed round. Defaults to 'active'. */
+  phase?: OverlayResultsMsg['phase'];
+}
+
+/** Project a durable snapshot into the authoritative results message. Delegates to
+ *  `buildResultsMsg` so an in-tab tick is byte-identical to a server replay. */
+export function resultsFromSnapshot(snap: VoteSnapshot): OverlayResultsMsg {
+  return buildResultsMsg(
+    snap.roomName,
+    { id: snap.overlayId, gen: snap.gen, phase: snap.phase ?? 'active' },
+    snap.rows,
+  );
+}
+
+/** Recover one identity's committed choice from a snapshot (its prior vote), or
+ *  undefined if that identity has not voted in this round. Used to replay a late
+ *  joiner's "you voted" state so the poll doesn't reappear as un-voted. */
+export function mineFromSnapshot(snap: VoteSnapshot, identity: string): string | undefined {
+  const row = snap.rows.find((r) => r.identity === identity);
+  return row?.choice;
+>>>>>>> da3b0de (--amend)
 }
 
 // ── identity helpers ─────────────────────────────────────────────────────────
