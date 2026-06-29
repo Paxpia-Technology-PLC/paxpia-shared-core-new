@@ -287,7 +287,13 @@ function WB_EDIT(editable: boolean, penColor: string, penWidth: number, alwaysDr
     // Abandon any in-progress stroke WITHOUT reporting it (a 2nd finger landed → navigate).
     'function abandonStroke(){if(cur!==null){cur=null;curD="";try{if(prev.parentNode)prev.parentNode.removeChild(prev);}catch(_){}}}',
     // Begin a 1-finger stroke at a screen point.
-    'function beginStroke(e){var p=toCanvas(e.clientX,e.clientY);if(!p)return;cur=e.pointerId;curD="M"+fmt(p.x)+" "+fmt(p.y);prev.setAttribute("d",curD);prev.setAttribute("stroke",COLOR);prev.setAttribute("stroke-width",String(WIDTH));__gel().appendChild(prev);try{svg.setPointerCapture(e.pointerId);}catch(_){}}',
+    'function beginStroke(e){var p=toCanvas(e.clientX,e.clientY);if(!p)return;cur=e.pointerId;curD="M"+fmt(p.x)+" "+fmt(p.y);prev.setAttribute("d",curD);prev.setAttribute("stroke",COLOR);prev.setAttribute("stroke-width",String(WIDTH));__gel().appendChild(prev);' +
+      // setPointerCapture is BELT-AND-BRACES only (see below): it is unreliable for SVG elements
+      // on older Android WebViews (the Galaxy-A30s fleet) — capture often fails to hold, so the
+      // drag slides over child <path> nodes / off the svg and the move events fire on a DIFFERENT
+      // target. We therefore do NOT depend on it; the move/up stream is read at the DOCUMENT level
+      // (capture-phase) so it survives whether or not pointer-capture holds.
+      'try{svg.setPointerCapture(e.pointerId);}catch(_){}}',
     // Seed the 2-finger pinch/pan anchor from the two live pointers.
     'function startPinch(){var ps=ptList();if(ps.length<2)return;var a=ps[0],b=ps[1];pinch={d:Math.hypot(a.x-b.x,a.y-b.y),mx:(a.x+b.x)/2,my:(a.y+b.y)/2,s:__vp.s,x:__vp.x,y:__vp.y};}',
     // Run one 2-finger update: zoom by the distance ratio about the gesture midpoint AND pan
@@ -299,35 +305,58 @@ function WB_EDIT(editable: boolean, penColor: string, penWidth: number, alwaysDr
       // the board), centre-origin like the preamble pan math.
       'var nx=pinch.x+(mx-pinch.mx),ny=pinch.y+(my-pinch.my);' +
       '__localVp(__clampPan(ns,nx,ny));}',
-    // POINTERDOWN: register the pointer; arbitrate by count. 1st → draw; 2nd → abandon the
-    // stroke + start pinch/pan; ≥3 → keep navigating (use the first two). Capture the gesture
-    // (preventDefault/stopPropagation) so the page + any parent ScrollView never scroll.
-    'svg.addEventListener("pointerdown",function(e){if(e.cancelable)e.preventDefault();e.stopPropagation();' +
+    // ── WI-9 (reopened) THE CONTINUOUS-DRAW FIX ─────────────────────────────────
+    // SYMPTOM: a finger-down dropped only a DOT — the M point painted but no L points
+    // followed. CAUSE: the move/up listeners hung off the `svg` element and relied on
+    // `svg.setPointerCapture` to retarget the stream. On the low-end Android WebView fleet
+    // capture on an SVG element is unreliable: it fails to hold, the finger slides over child
+    // <path>/<g> nodes (or off the svg), and the `pointermove` events fire on a DIFFERENT
+    // target — never reaching the svg listener. So the stroke never grew past its first point.
+    // FIX: attach pointermove/up/cancel at the DOCUMENT level in the CAPTURE phase (non-passive)
+    // — document sees EVERY pointer event for the whole page regardless of which node it lands
+    // on or whether SVG capture held, so the move stream can no longer be lost. We gate each
+    // document handler on "is a gesture active for this pointer" (the PTRS registry) so it only
+    // acts during our own draw/pinch, and we still preventDefault during an active gesture to
+    // stop any native scroll. setPointerCapture stays as a harmless belt-and-braces.
+    //
+    // POINTERDOWN (on the svg — the board surface starts the gesture): register the pointer;
+    // arbitrate by count. 1st → draw; 2nd → abandon the stroke + start pinch/pan; ≥3 → keep
+    // navigating (use the first two). NOTE: we do NOT preventDefault on pointerdown — on some
+    // Android WebViews a preventDefault-ed, captured pointerdown spuriously emits pointercancel
+    // (which would discard the just-started stroke → a dot). `touch-action:none` (set on the
+    // page/board) already stops native scroll at down; we preventDefault only on the MOVES.
+    'svg.addEventListener("pointerdown",function(e){e.stopPropagation();' +
       'PTRS[e.pointerId]={id:e.pointerId,x:e.clientX,y:e.clientY};NP=ptList().length;' +
       'if(NP>=2){abandonStroke();suspendDraw=true;startPinch();}' +
       'else if(NP===1&&!suspendDraw){beginStroke(e);}' +
       '},{passive:false});',
-    // POINTERMOVE: update the pointer's position, then either extend the stroke (1 finger) or
-    // run the pinch/pan (≥2). preventDefault so nothing native scrolls during the gesture.
-    'svg.addEventListener("pointermove",function(e){if(!PTRS[e.pointerId])return;if(e.cancelable)e.preventDefault();e.stopPropagation();' +
+    // POINTERMOVE (DOCUMENT, capture phase): only act when this pointer is part of an active
+    // gesture (in PTRS). Update its position, then either extend the stroke (1 finger) or run
+    // the pinch/pan (≥2). preventDefault+stopPropagation so nothing native scrolls and the
+    // preamble's bubble-phase pan handler never also fires.
+    'function onMove(e){if(!PTRS[e.pointerId])return;if(e.cancelable)e.preventDefault();e.stopPropagation();' +
       'PTRS[e.pointerId].x=e.clientX;PTRS[e.pointerId].y=e.clientY;' +
       'if(ptList().length>=2){runPinch();return;}' +
-      'if(cur!==null&&e.pointerId===cur){var p=toCanvas(e.clientX,e.clientY);if(!p)return;curD+=" L"+fmt(p.x)+" "+fmt(p.y);prev.setAttribute("d",curD);}' +
-      '},{passive:false});',
+      'if(cur!==null&&e.pointerId===cur){var p=toCanvas(e.clientX,e.clientY);if(!p)return;curD+=" L"+fmt(p.x)+" "+fmt(p.y);prev.setAttribute("d",curD);}}',
+    'document.addEventListener("pointermove",onMove,{capture:true,passive:false});',
     // Finish a stroke (report it up) — only when a real 1-finger stroke completes.
     'function finish(){if(cur===null)return;cur=null;try{if(prev.parentNode)prev.parentNode.removeChild(prev);}catch(_){}if(curD.indexOf("L")<0){curD="";return;}var stroke={id:"s"+Date.now()+"_"+Math.floor(Math.random()*1e6),d:curD,color:COLOR,width:WIDTH};curD="";report({e:"wb.draw",stroke:stroke});}',
-    // POINTERUP/CANCEL: drop the pointer; recompute count. 2→1 leaves the lingering finger
-    // INERT (suspendDraw stays true until ALL fingers lift, so it can\'t start a stray stroke).
-    // When the LAST finger lifts: finish a pending 1-finger stroke + clear pinch/suspend.
+    // POINTERUP/CANCEL (DOCUMENT, capture phase): only act for a pointer we're tracking. Drop it;
+    // recompute count. 2→1 leaves the lingering finger INERT (suspendDraw stays true until ALL
+    // fingers lift, so it can\'t start a stray stroke). When the LAST finger lifts: finish a
+    // pending 1-finger stroke + clear pinch/suspend. A spurious pointercancel mid-drag is treated
+    // EXACTLY like a pointerup, so an in-flight multi-point stroke is COMMITTED (not discarded —
+    // never silently turned back into a dot).
     'function up(e){if(!PTRS[e.pointerId])return;try{svg.releasePointerCapture(e.pointerId);}catch(_){}delete PTRS[e.pointerId];var n=ptList().length;' +
       'if(n>=2){startPinch();}' +                                  // ≥2 remain → re-seed the anchor
       'else if(n===1){pinch=null;}' +                              // dropped to 1 → no nav, no draw (suspended)
       'else{finish();pinch=null;suspendDraw=false;}' +            // all up → finish + reset
       '}',
-    'svg.addEventListener("pointerup",up,{passive:false});',
-    'svg.addEventListener("pointercancel",up,{passive:false});',
-    // pointerleave is NOT treated as up: with pointer capture a single drag stays captured, and
-    // a multi-touch leave would spuriously reset. (Capture release happens on real up/cancel.)
+    'document.addEventListener("pointerup",up,{capture:true,passive:false});',
+    'document.addEventListener("pointercancel",up,{capture:true,passive:false});',
+    // pointerleave is NOT treated as up: a single drag must continue even when the finger slides
+    // off the svg (the whole point of reading moves at the document level). Capture release
+    // happens on the real up/cancel above.
     '})();',
   ].join('\n');
 }

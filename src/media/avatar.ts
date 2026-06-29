@@ -30,6 +30,17 @@ function trimBase(base: string): string {
   return base.replace(/\/+$/, '');
 }
 
+/** Make a stored avatar value absolute. The DB now persists a HOST-LESS object
+ *  path (`avatars/<id>.png`) — the standing rule "never store an absolute CDN URL"
+ *  — so the client supplies the host here by prefixing the CDN bucket base. An
+ *  already-absolute value (legacy rows, external URLs, data:/blob:) is returned
+ *  untouched, so this is backward-compatible during the relative migration. */
+function absolutizeAvatar(value: string, bucketBase: string): string {
+  if (/^(https?:)?\/\//i.test(value) || value.startsWith('data:') || value.startsWith('blob:')) return value;
+  if (!bucketBase) return value;
+  return `${trimBase(bucketBase)}/${value.replace(/^\/+/, '')}`;
+}
+
 /** The conventional object URL for a user's avatar at a given extension. */
 export function avatarObjectUrl(bucketBase: string, userId: string, ext: string = 'png'): string {
   return `${trimBase(bucketBase)}/avatars/${userId}.${ext}`;
@@ -46,7 +57,7 @@ export function avatarObjectUrl(bucketBase: string, userId: string, ext: string 
  */
 export function resolveAvatarUrl(id: AvatarIdentity, bucketBase: string): string {
   const explicit = (id.avatarUrl ?? '').trim();
-  if (explicit) return explicit;
+  if (explicit) return absolutizeAvatar(explicit, bucketBase);
   const uid = (id.userId ?? '').trim();
   if (uid && bucketBase) return avatarObjectUrl(bucketBase, uid, 'png');
   return '';
@@ -62,7 +73,7 @@ export function avatarUrlCandidates(id: AvatarIdentity, bucketBase: string): str
   const explicit = (id.avatarUrl ?? '').trim();
   const uid = (id.userId ?? '').trim();
   const out: string[] = [];
-  if (explicit) out.push(explicit);
+  if (explicit) out.push(absolutizeAvatar(explicit, bucketBase));
   if (uid && bucketBase) {
     for (const e of AVATAR_EXTS) {
       const u = avatarObjectUrl(bucketBase, uid, e);

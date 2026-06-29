@@ -566,6 +566,123 @@ const sceneWB: Scene = {
   eq(s2.getState().status, 'idle', 'WI-8: endLive returns to idle');
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// 6. WI-7c — PERSISTENT SOURCE LAYER (brain side): a cam → cam+screenshare switch
+//    MAINTAINS the camera (provisionScene must REUSE the already-live camera source and
+//    acquire ONLY the new screenshare) and republishes the correct primary output. The
+//    per-source-key REUSE itself lives in the mobile `mediaRegistry`; here we assert the
+//    brain re-provisions + republishes the new scene WITHOUT ever publishing a null/blank
+//    track, so the camera never blanks on the switch.
+// ════════════════════════════════════════════════════════════════════════════
+{
+  // Scene CAM = camera only. Scene MIX = the SAME camera (full-frame primary, z 0) + a
+  // screenshare PiP (z 1). A real registry keys both cameras to the one `camera` source
+  // key, so the camera carries over; this fake models that by acquiring per source key.
+  const camOnly: Scene = { id: 'CAM', name: 'CAM', items: [lItem('cam-a', 'camera', 0)] };
+  const camPlusScreen: Scene = {
+    id: 'MIX',
+    name: 'MIX',
+    items: [lItem('mix-cam', 'camera', 0), lItem('mix-screen', 'screen', 1)],
+  };
+
+  let st: ScenesState = { scenes: [camOnly, camPlusScreen], activeId: 'CAM' };
+  const subs = new Set<(s: ScenesState, prev: ScenesState) => void>();
+  const scenesHandle = {
+    getState: () => st,
+    setState: (p: Partial<ScenesState>) => { const prev = st; st = { ...st, ...p }; for (const cb of subs) cb(st, prev); },
+    subscribe: (cb: (s: ScenesState, prev: ScenesState) => void) => { subs.add(cb); return () => subs.delete(cb); },
+  };
+  const switchScene = (id: string) => { const prev = st; st = { ...st, activeId: id }; for (const cb of subs) cb(st, prev); };
+
+  // A fake media seam modelling the PERSISTENT SOURCE LAYER: streams are keyed by SOURCE
+  // KEY (camera/screen), acquired ONCE, reused across scenes. provisionScene acquires only
+  // the keys a scene needs that aren't already live (the WI-7c diff).
+  const liveSourceKeys = new Set<string>();
+  const acquiredCalls: string[] = []; // each NEW acquire (a getUserMedia) — must NOT include a repeat camera
+  const keyForItem = (type: string) => (type === 'screen' ? 'screen' : 'camera');
+  const itemsOf = (id: string) => (st.scenes.find((s) => s.id === id)?.items ?? []).filter((i) => i.type === 'camera' || i.type === 'screen');
+
+  // The fake compositor's output = the active scene's PRIMARY (lowest-z) media item's
+  // source key token, so it's never null while a camera source is live.
+  let compActive = 'CAM';
+  const primaryTokenFor = (sceneId: string): string | null => {
+    const media = itemsOf(sceneId).slice().sort((a, b) => a.z - b.z);
+    const primary = media.find((i) => liveSourceKeys.has(keyForItem(i.type))) ?? media[0];
+    if (!primary) return null;
+    return liveSourceKeys.has(keyForItem(primary.type)) ? `out:${keyForItem(primary.type)}` : null;
+  };
+  const compositor = {
+    setScene: () => {},
+    setActiveScene: (id: string) => { compActive = id; },
+    upsertItem: () => {},
+    removeItem: () => {},
+    getOutputTrack: () => primaryTokenFor(compActive),
+    start: () => {},
+    stop: () => {},
+  };
+
+  const republished: (string | null)[] = [];
+  const transport3: DirectorTransport = {
+    publishLiveSync: () => {}, publishScene: () => {}, publishManifest: () => {},
+    createAndActivate: () => {}, closeOverlay: () => {}, revealOverlay: () => {}, refreshOverlay: () => 1,
+    enableAggregator: () => () => {}, onOverlayChanged: () => () => {}, onResults: () => () => {},
+    onParticipantConnected: () => () => {}, dispose: () => {},
+  };
+  const cache3: DirectorPreloadCache = (() => {
+    const m = new Map<string, { id: string; doc: never; bytes: number }>();
+    return { has: (id: string) => m.has(id), get: (id: string) => m.get(id) as never, set: (id: string, e: { id: string; doc: never; bytes: number }) => void m.set(id, e) };
+  })();
+  const published3: (string | null)[] = [];
+  const media3: DirectorMedia = {
+    provisionScene: async (sceneId) => {
+      // DIFF: acquire only the source keys this scene needs that aren't already live.
+      for (const it of itemsOf(sceneId)) {
+        const key = keyForItem(it.type);
+        if (!liveSourceKeys.has(key)) { liveSourceKeys.add(key); acquiredCalls.push(key); }
+      }
+      return itemsOf(sceneId).length > 0;
+    },
+    sceneHasMedia: (id) => itemsOf(id).length > 0,
+    openRoom: async () => ({ roomName: 'room-3', room: { name: 'room-3' } }),
+    mediaSourceFor: () => ({}),
+    publishVideoTrack: async (_r, t) => { published3.push(t as string | null); },
+    republishVideoTrack: async (_r, t) => { republished.push(t as string | null); },
+    onVideoTrackLost: () => () => {},
+    publishMic: async () => {},
+    buildTransport: () => transport3,
+    closeRoom: async () => { liveSourceKeys.clear(); },
+  };
+  const deps3: DirectorDeps = {
+    media: media3,
+    compositorFactory: () => compositor,
+    materials: { baseUrl: '', fetch: async () => ({ ok: true, status: 200, json: async () => ({}) }), authHeader: () => ({}) },
+    materialsRuntime: { buildDocPayload: async (m: DirectorMaterial) => ({ title: m.id, pages: ['u'], page: 0, sourceUrl: 'u' }), warmManifest: async () => {} },
+    newPreloadCache: () => cache3,
+    scenes: scenesHandle as never,
+    scheduling: { getState: () => ({ scheduled: [], activeStreamId: null }), setState: () => {}, subscribe: () => () => {}, setActiveStream: () => {} },
+    isAuthed: () => true,
+  };
+
+  const s3 = createDirectorSession(deps3);
+  await s3.goLive('Mixed class', 'public');
+  eq(s3.getState().status, 'live', 'WI-7c: video session reaches live');
+  eq(acquiredCalls.filter((k) => k === 'camera').length, 1, 'WI-7c: go-live acquires the camera ONCE');
+  eq(published3[0], 'out:camera', 'WI-7c: go-live publishes the camera as the primary output');
+
+  // HOT-SWAP to the cam+screenshare scene. The brain re-provisions → the diff acquires ONLY
+  // the screenshare (the camera is REUSED, not re-acquired), then republishes.
+  switchScene('MIX');
+  await new Promise((r) => setTimeout(r, 0));
+  eq(acquiredCalls.filter((k) => k === 'camera').length, 1, 'WI-7c: the cam→cam+screen switch does NOT re-acquire the camera (maintained source)');
+  eq(acquiredCalls.filter((k) => k === 'screen').length, 1, 'WI-7c: the switch acquires ONLY the new screenshare source');
+  ok(liveSourceKeys.has('camera') && liveSourceKeys.has('screen'), 'WI-7c: both the maintained camera and the new screenshare are live after the switch');
+  ok(republished.length >= 1 && republished[republished.length - 1] !== null, 'WI-7c: the switch republishes a live (non-null) primary output — camera never blanks');
+
+  await s3.endLive();
+  eq(s3.getState().status, 'idle', 'WI-7c: endLive returns to idle');
+  eq(liveSourceKeys.size, 0, 'WI-7c: end-live releases every shared source');
+}
+
 // ── report ───────────────────────────────────────────────────────────────────
 if (failures.length > 0) {
   console.error(`FAIL — ${failures.length} failed, ${passed} passed:`);
