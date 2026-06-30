@@ -109,6 +109,12 @@ export interface Compositor {
    *  `endLive` (and on a go-live failure path), exactly as `store/live.ts` calls
    *  `compositor?.stop()`. */
   stop(): void;
+  /** OPTIONAL (platforms whose output track is minted ASYNC, e.g. the RN native composite):
+   *  register a callback fired when the output track first becomes available (and on any
+   *  later output-track identity change), so the brain can re-publish + re-point the preview
+   *  WITHOUT waiting for a scene switch. Returns an unsubscribe. Platforms with a synchronous
+   *  output track (web canvas) omit it — the brain optional-chains the call, so it's a no-op. */
+  onOutputTrackReady?(cb: () => void): () => void;
 }
 
 /** The platform FACTORY the producer brain is handed (DI), mirroring how

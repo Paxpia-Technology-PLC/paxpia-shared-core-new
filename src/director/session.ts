@@ -158,6 +158,11 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
   let gen = 0;
   // The id of the participation overlay the STREAMER chose (P0.2 streamer-authoritative).
   let localOverlayId: string | null = null;
+  // The (id, gen) of the participation round the streamer just CLOSED via "None". The bot
+  // keeps `current` pointed at the closed overlay and re-echoes it (overlay.changed, same
+  // id+gen) on close + on join, so without this the cleared slot snaps back to that quiz.
+  // We ignore echoes of this exact round until a NEW activation bumps gen / changes id.
+  let closedOverlay: { id: string; gen: number } | null = null;
   // Per-overlay LAST gen the streamer used (overlay id → gen), so re-serving the SAME
   // overlay reuses its gen and votes PERSIST across a swap-out-and-back (P1.4).
   const overlayGens = new Map<string, number>();
@@ -165,6 +170,8 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
   let scenesUnsub: (() => void) | null = null;
   // Unsubscribe for the media seam's "published video track lost" safety-net hook.
   let videoLostUnsub: (() => void) | null = null;
+  // Unsub for the compositor's "output track ready" callback (RN async composite mint).
+  let compositorReadyUnsub: (() => void) | null = null;
   // Guards against re-entrant recovery (a track-lost event firing while we're already
   // re-provisioning + republishing).
   let recoveringVideo = false;
@@ -396,6 +403,11 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
         // back to LiveKit, not just the local preview"). Web omits the hook (stable
         // canvas track), so optional-chaining = no-op there.
         videoLostUnsub = media.onVideoTrackLost?.(() => void recoverVideoTrack()) ?? null;
+        // The mobile composite output track is minted ASYNC; when it first resolves,
+        // republish so the composite shows on its OWN scene at go-live (without it, the
+        // first publish above is the passthrough primary / null and the composite only
+        // appeared on the next scene switch, then dropped). Web omits the hook (no-op).
+        compositorReadyUnsub = compositor.onOutputTrackReady?.(() => { void republishOutputTrack(); }) ?? null;
       }
 
       // Mic: best-effort with video, REQUIRED in audio-only (the media seam throws).
@@ -406,7 +418,7 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
       disableAggregator = channel.enableAggregator(() => state.activeOverlay);
       // The bot owns the participation overlay slot; route its echo there (P0.2).
       channel.onOverlayChanged((e) => {
-        const decision = reconcileOverlayChanged(e.overlay, state.activeOverlay, localOverlayId);
+        const decision = reconcileOverlayChanged(e.overlay, state.activeOverlay, localOverlayId, closedOverlay);
         if (decision.action === 'ignore') return;
         if (decision.action === 'clear') {
           set({ activeOverlay: null });
@@ -418,6 +430,8 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
       });
       channel.onResults((r) =>
         set((s) => {
+          // Ignore a late results tick for a round the streamer just closed (don't repopulate).
+          if (closedOverlay && r.overlayId === closedOverlay.id && r.gen <= closedOverlay.gen) return {};
           const a = s.activeOverlay;
           const { adopt, gen: g } = reconcileResultsGen(a, r.overlayId, r.gen);
           return adopt ? { results: r, activeOverlay: { ...a!, gen: g } } : { results: r };
@@ -443,10 +457,13 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
         // Tell the compositor to hot-swap. On web the output track is STABLE (only its
         // content changes); on RN's single-source passthrough the output track CHANGES to
         // the new scene's primary camera — so after the new media is provisioned we must
-        // RE-PUBLISH that track to the SFU (otherwise the SFU keeps the OLD, now-stale
-        // track and the viewer's video drops on every scene switch — WI-8). Re-seed the
-        // scene + bindings first so a newly-composed scene paints correctly.
-        seedCompositorScene(nextId);
+        // RE-PUBLISH that track to the SFU (otherwise the SFU keeps the OLD, now-stale track
+        // and the viewer's video drops on every scene switch — WI-8).
+        // Flip the active scene NOW (so useComposite() reflects it for already-live shared
+        // sources), but do NOT eager-seed here: the eager seed pushed a layout for sources
+        // not yet live AND double-seeded with the post-provision seed below, thrashing the
+        // native sinks and momentarily dropping the composite (~2s flash). The authoritative
+        // seed + republish run ONCE after provision (below), when the new sources are live.
         compositor?.setActiveScene(nextId);
         // Acquire the new scene's media, THEN republish the (possibly changed) output track
         // and re-broadcast layout + overlays. Provision is sequenced (awaited) before the
@@ -509,6 +526,8 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
     } catch (e) {
       videoLostUnsub?.();
       videoLostUnsub = null;
+      compositorReadyUnsub?.();
+      compositorReadyUnsub = null;
       compositor?.stop();
       compositor = null;
       scenesUnsub?.();
@@ -536,6 +555,8 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
     }
     videoLostUnsub?.();
     videoLostUnsub = null;
+    compositorReadyUnsub?.();
+    compositorReadyUnsub = null;
     recoveringVideo = false;
     scenesUnsub?.();
     scenesUnsub = null;
@@ -554,6 +575,7 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
     }
     preloadCache = deps.newPreloadCache();
     localOverlayId = null;
+    closedOverlay = null;
     overlayGens.clear();
     annOn = false;
     scheduling.setActiveStream?.(null);
@@ -608,6 +630,8 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
     const inst = buildInstance({ ...draft, id: draftId }, g);
     // Mark the streamer's CURRENT selection so a stale echo can't flash it back (P0.2).
     localOverlayId = inst.id;
+    // A new activation supersedes any closed-round guard (re-serving the SAME id must stick).
+    closedOverlay = null;
     channel.createAndActivate(inst);
     // Reflect it locally right away; the onOverlayChanged echo reconciles after.
     set((s) => ({ ...setSlot({ activeDoc: s.activeDoc, activeOverlay: s.activeOverlay }, inst), results: null }));
@@ -647,9 +671,10 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
     }
     const a = state.activeOverlay;
     if (channel && a) channel.closeOverlay(a.id);
-    // Streamer took the overlay down → drop the local selection so a later clear echo
-    // is honored and a new activation starts clean.
+    // Streamer took the overlay down → drop the local selection AND remember the closed
+    // round so the bot's re-assert echo (same id+gen, phase 'closed') can't snap it back.
     localOverlayId = null;
+    if (a && slotForKind(a.kind) === 'overlay') closedOverlay = { id: a.id, gen: a.gen };
     set((s) => ({ ...clearSlot({ activeDoc: s.activeDoc, activeOverlay: s.activeOverlay }, 'overlay') }));
     broadcastScene();
   }

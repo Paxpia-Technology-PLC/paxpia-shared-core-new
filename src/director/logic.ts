@@ -247,12 +247,18 @@ export function reconcileOverlayChanged(
   echo: OverlayInstance | null,
   prev: OverlayInstance | null,
   localOverlayId: string | null,
+  closed?: { id: string; gen: number } | null,
 ): OverlayChangedDecision {
   if (!echo) {
     if (prev && localOverlayId === null) return { action: 'clear' };
     return { action: 'ignore' };
   }
   if (slotForKind(echo.kind) !== 'overlay') return { action: 'ignore' };
+  // A round the streamer just CLOSED ("None"): ignore the bot's re-assert of that SAME
+  // (id, gen). The bot keeps its `current` pointed at the closed overlay and re-echoes it
+  // on close + on any join, which would otherwise snap a cleared slot back to that quiz. A
+  // NEW activation / re-serve / reset bumps the gen (or changes id), so it passes this guard.
+  if (closed && echo.id === closed.id && echo.gen <= closed.gen) return { action: 'ignore' };
   if (localOverlayId !== null && echo.id !== localOverlayId) return { action: 'ignore' };
   if (prev && prev.id === echo.id && echo.gen < prev.gen) return { action: 'ignore' };
   return { action: 'adopt', overlay: echo };
