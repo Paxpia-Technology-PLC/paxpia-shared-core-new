@@ -90,6 +90,7 @@ function initialState(): DirectorState {
     preloadProgress: 1,
     docPresenter: null,
     servedDocs: {},
+    servingDocs: {},
     sceneNonce: 0,
     docAnn: null,
     wbSettings: {},
@@ -567,6 +568,7 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
       preloadProgress: 1,
       docPresenter: null,
       servedDocs: {},
+      servingDocs: {},
       sceneNonce: 0,
       audioOnly: false,
       provisioning: null,
@@ -776,25 +778,68 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
     return targetId;
   }
 
+  // Per-slot in-flight flag bookkeeping (sceneId → itemId → true) so the operator slot can
+  // show a LOADING spinner between the tap and the rendered doc. Pure set helper.
+  function markServing(sceneId: string, targetId: string, on: boolean): void {
+    set((s) => {
+      const sceneServing = { ...(s.servingDocs[sceneId] ?? {}) };
+      if (on) sceneServing[targetId] = true;
+      else delete sceneServing[targetId];
+      const servingDocs = { ...s.servingDocs };
+      if (Object.keys(sceneServing).length === 0) delete servingDocs[sceneId];
+      else servingDocs[sceneId] = sceneServing;
+      return { servingDocs };
+    });
+  }
+
   async function serveMaterialToSlot(material: DirectorMaterial, itemId?: string): Promise<string | null> {
-    if (!channel || state.status !== 'live') return null;
+    // Works in BOTH preview and live. The slot-target math is pure (no room needed); only the
+    // presigned grant needs a room scope. When NOT live, grant under the synthetic 'preview'
+    // scope (ownership is enforced server-side per-caller, mirroring web preview.ts) so the
+    // operator sees the doc in the scene preview BEFORE going live (the live-only guard here was
+    // the bug: a doc pick in preview silently did nothing).
     const { sceneId, slots } = sceneSlotsNow(state.servedDocs);
     const targetId = resolveDocServeTarget(slots, itemId);
     if (!targetId) return null; // no empty doc slot in this scene → NO-OP
-    const { roomName } = state;
-    let payload = getCachedDoc(preloadCache as never, material.id);
-    if (!payload && roomName) {
-      payload = await materialsRuntime.buildDocPayload(material, roomName);
-      preloadCache.set(material.id, { id: material.id, doc: payload, bytes: material.sizeBytes });
+
+    let built: DocPayload;
+    try {
+      // Fast path (live, pre-warmed) reads the cache; else grant on demand under the live room
+      // when live, otherwise the synthetic 'preview' scope.
+      let payload = getCachedDoc(preloadCache as never, material.id);
+      if (!payload) {
+        markServing(sceneId, targetId, true);
+        const roomName = state.roomName ?? 'preview';
+        payload = await materialsRuntime.buildDocPayload(material, roomName);
+        // Only cache under a REAL room — a 'preview'-scoped URL is short-lived and is re-granted
+        // on go-live via the manifest warm.
+        if (state.roomName) {
+          preloadCache.set(material.id, { id: material.id, doc: payload, bytes: material.sizeBytes });
+        }
+      }
+      built = payload;
+    } catch (e) {
+      markServing(sceneId, targetId, false);
+      set({ error: e instanceof Error ? e.message : 'Could not load document.' });
+      throw e;
     }
-    if (!payload) throw new Error('Room not ready yet.');
-    const built = payload;
+
     const inst = buildInstance({ id: `srv_${targetId}`, kind: 'doc', title: built.title, payload: built }, (gen += 1));
-    set((s) => ({
-      servedDocs: { ...s.servedDocs, [sceneId]: { ...(s.servedDocs[sceneId] ?? {}), [targetId]: inst } },
-      activeDoc: inst,
-      docPresenter: { page: built.page, zoom: 1, panX: 0, panY: 0 },
-    }));
+    set((s) => {
+      const sceneServing = { ...(s.servingDocs[sceneId] ?? {}) };
+      delete sceneServing[targetId];
+      const servingDocs = { ...s.servingDocs };
+      if (Object.keys(sceneServing).length === 0) delete servingDocs[sceneId];
+      else servingDocs[sceneId] = sceneServing;
+      return {
+        servedDocs: { ...s.servedDocs, [sceneId]: { ...(s.servedDocs[sceneId] ?? {}), [targetId]: inst } },
+        activeDoc: inst,
+        docPresenter: { page: built.page, zoom: 1, panX: 0, panY: 0 },
+        servingDocs,
+      };
+    });
+    // Broadcasts are internally guarded (no-op when not live), so calling them in preview is safe
+    // and keeps the live path byte-for-byte identical.
     broadcastLiveSync();
     broadcastScene();
     return targetId;

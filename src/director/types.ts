@@ -339,6 +339,11 @@ export interface DirectorState {
   docPresenter: DocPresenterState | null;
   /** PER-SCENE served DOC fills (sceneId → itemId → live doc instance). */
   servedDocs: Record<string, Record<string, OverlayInstance>>;
+  /** PER-SCENE, per-slot doc-serve IN-FLIGHT flags (sceneId → itemId → true) while the
+   *  presigned grant + DocPayload build are pending — lets a slot show a LOADING indicator
+   *  between the tap and the rendered doc (matters in PREVIEW, where the grant is fetched
+   *  on-demand rather than from the warm cache). Cleared on success or failure. */
+  servingDocs: Record<string, Record<string, boolean>>;
   /** Monotonic scene-sync sequence. */
   sceneNonce: number;
   /** WHITEBOARD-ON-DOC ANNOTATION (Message D item 2): the streamer's active annotation
