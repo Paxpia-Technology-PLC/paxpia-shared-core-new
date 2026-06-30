@@ -27,7 +27,7 @@ import {
 } from '../streaming/live';
 import { docAnnotationStateFor, docAnnotationDocId, type DocAnnotationState } from '../overlays/annotation';
 import type { DocPayload, OverlayInstance } from '../overlays/types';
-import { buildManifest } from '../streaming/viewer';
+import { buildManifest, manifestEntry } from '../streaming/viewer';
 import { getCachedDoc } from '../streaming/preload';
 import { buildRenderedScene } from '../streaming/scene';
 import { deriveManifest } from '../streaming/prep';
@@ -687,7 +687,14 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
     const a = state.activeDoc;
     if (!a || a.kind !== 'doc') return;
     const payload = a.payload as DocPayload;
-    const clamped = Math.max(0, Math.min(page, payload.pages.length - 1));
+    // Effective page total: the rendered page blobs (web operator path) OR the manifest's
+    // pageCount (raw PDF/EPUB served by URL — `payload.pages` is EMPTY there, so the old
+    // `pages.length - 1` clamp collapsed EVERY page to 0 → next/prev no-op'd for PDF + EPUB).
+    // When neither is known yet (raw doc, no manifest count), don't cap — the frame clamps to
+    // its discovered page count and reports the real page back.
+    const entry = manifestEntry(state.manifest, a.id);
+    const total = Math.max(payload.pages.length, entry?.pageCount && entry.pageCount > 0 ? entry.pageCount : 0);
+    const clamped = total > 0 ? Math.max(0, Math.min(page, total - 1)) : Math.max(0, page);
     if (clamped === payload.page) return;
     const next = { ...a, payload: { ...payload, page: clamped } } as OverlayInstance;
     // A page flip PRESERVES the presenter ZOOM across pages (P1.3); only pan recentres.

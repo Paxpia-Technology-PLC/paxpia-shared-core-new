@@ -216,6 +216,11 @@ export function frameHead(mode: DocViewMode, transparent = false): string {
     ':root{color-scheme:dark;}' +
     'html,body{margin:0;padding:0;background:' + pageBg + ';color:#e8e8ef;}' +
     'html,body{height:' + (scrolled ? 'auto' : '100%') + ';overflow:' + (scrolled ? 'auto' : 'hidden') + ';}' +
+    // SINGLE mode: the shared transform owns ALL gestures, so the page must NOT do native
+    // pan/zoom/scroll — `touch-action:none` makes Android WebView yield multi-touch (pinch)
+    // + drag to our handlers (the missing piece behind "pinch does nothing" + the pan jank /
+    // snap-back). Inert on iOS WKWebView. SCROLL mode keeps native touch-action (it scrolls).
+    (scrolled ? '' : 'html,body{touch-action:none;-ms-touch-action:none;overscroll-behavior:none;}#stage,#content{touch-action:none;-ms-touch-action:none;}') +
     // #stage = the fixed viewport (single mode). #content = the transformed layer. Both are
     // explicitly transparent for an annotation board so nothing opaque sits over the doc.
     '#stage{position:' + (scrolled ? 'static' : 'fixed') + ';inset:0;overflow:hidden;background:transparent;}' +
@@ -270,7 +275,13 @@ export function runtimePreamble(mode: DocViewMode): string {
     'function __ch(){return document.documentElement.clientHeight||window.innerHeight||1;}',
     'function __clampZ(z){return Math.min(MAXZ,Math.max(MINZ,z));}',
     'function __bound(s,size){return Math.max(0,((s-1)*size)/2);}',
-    'function __clampPan(s,x,y){var bx=__bound(s,__cw()),by=__bound(s,__ch());return {s:s,x:Math.min(bx,Math.max(-bx,x)),y:Math.min(by,Math.max(-by,y))};}',
+    // Vertical pan bound from the CONTENT height (the rendered page can be TALLER than the
+    // viewport at fit-width, so a tall PDF page must pan vertically even at scale 1 — the old
+    // (s-1)*ch/2 bound was 0 at s=1 and snapped every downward drag back to centre). Width is
+    // fit-to-frame so the horizontal bound stays (s-1)*cw/2. A board/short page (content==frame)
+    // collapses to the same result, so the whiteboard frame is unaffected.
+    'function __contentH(){var c=__ensureContent();return c?Math.max(c.scrollHeight||0,c.offsetHeight||0,__ch()):__ch();}',
+    'function __clampPan(s,x,y){var bx=__bound(s,__cw());var by=Math.max(0,(__contentH()*s-__ch())/2);return {s:s,x:Math.min(bx,Math.max(-bx,x)),y:Math.min(by,Math.max(-by,y))};}',
     'function __render(){var c=__ensureContent();if(c)c.style.transform="translate("+__vp.x+"px,"+__vp.y+"px) scale("+__vp.s+")";}',
     // apply from the HOST (follow) — no report back.
     'function applyTransform(s,x,y){__vp=__clampPan(__clampZ(s||1),x||0,y||0);__render();}',
@@ -282,14 +293,19 @@ export function runtimePreamble(mode: DocViewMode): string {
     scrolled ? '/* scroll mode: native body scroll; no gesture transform */' : (
       // single mode: wire pan-when-zoomed, pinch, double-tap-to-toggle-zoom.
       '(function(){' +
-      'var drag=null,pinch=null,lastTap=0;' +
-      'function pt(e){return {x:e.clientX,y:e.clientY};}' +
-      'document.addEventListener("pointerdown",function(e){if(__vp.s>1){drag={id:e.pointerId,x:e.clientX,y:e.clientY,ox:__vp.x,oy:__vp.y};}},{passive:true});' +
+      'var drag=null,pinch=null,lastTap=0,__lastZoom=2.2;' +
+      // PAN: start a drag whenever the content overflows the frame on EITHER axis (zoomed in,
+      // OR a tall fit-width page at scale 1) — not only when s>1, so a tall PDF pans at fit.
+      'document.addEventListener("pointerdown",function(e){if(__vp.s>1||__contentH()>__ch()+1){drag={id:e.pointerId,x:e.clientX,y:e.clientY,ox:__vp.x,oy:__vp.y};}},{passive:true});' +
       'document.addEventListener("pointermove",function(e){if(drag&&e.pointerId===drag.id){var nx=drag.ox+(e.clientX-drag.x),ny=drag.oy+(e.clientY-drag.y);__localVp(__clampPan(__vp.s,nx,ny));}},{passive:true});' +
+      // DOUBLE-TAP: at default zoom → restore the LAST non-default zoom (first time: 2.2x); else
+      // store the current zoom and return to default. (Was a fixed fit<->2.2 toggle.)
       'document.addEventListener("pointerup",function(e){if(drag&&e.pointerId===drag.id)drag=null;' +
-      'var now=nowMs();if(now-lastTap<300){var r=__vp.s>1.01?1:2.2;__zoomAt(r,e.clientX,e.clientY);lastTap=0;}else lastTap=now;},{passive:true});' +
-      // touch pinch (two fingers): scale about the midpoint.
-      'document.addEventListener("touchmove",function(e){if(e.touches&&e.touches.length===2){var a=e.touches[0],b=e.touches[1];var d=Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY);var mx=(a.clientX+b.clientX)/2,my=(a.clientY+b.clientY)/2;if(pinch){__zoomAt(__vp.s*(d/pinch.d),mx,my);}pinch={d:d};}},{passive:true});' +
+      'var now=nowMs();if(now-lastTap<300){var atDef=__vp.s<=1.01;var r;if(atDef){r=__lastZoom>1.01?__lastZoom:2.2;}else{__lastZoom=__vp.s;r=1;}__zoomAt(r,e.clientX,e.clientY);lastTap=0;}else lastTap=now;},{passive:true});' +
+      // touch pinch (two fingers): scale about the midpoint. NON-PASSIVE + preventDefault so
+      // Android WebView yields the multi-touch gesture to us (the missing piece — with
+      // touch-action:none on the frame this makes pinch-to-zoom actually fire).
+      'document.addEventListener("touchmove",function(e){if(e.touches&&e.touches.length===2){if(e.cancelable)e.preventDefault();var a=e.touches[0],b=e.touches[1];var d=Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY);var mx=(a.clientX+b.clientX)/2,my=(a.clientY+b.clientY)/2;if(pinch){__zoomAt(__vp.s*(d/pinch.d),mx,my);}pinch={d:d};}},{passive:false});' +
       'document.addEventListener("touchend",function(e){if(!e.touches||e.touches.length<2)pinch=null;},{passive:true});' +
       // WHEEL = ZOOM, CAPTURED (R5). In single/nav mode a wheel inside the frame zooms about
       // the pointer and is preventDefault-ed so it NEVER propagates out to scroll the host
