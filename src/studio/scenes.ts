@@ -19,6 +19,7 @@ import {
   reorderZ,
   resizeItem,
   setItemFit,
+  setItemRect,
   type FitMode,
   type LayoutItem,
   type LayoutItemType,
@@ -157,6 +158,13 @@ export function moveItemBy(itemId: string, dx: number, dy: number) {
 export function resizeItemBy(itemId: string, corner: ResizeCorner, dx: number, dy: number) {
   return (st: ScenesState): Partial<ScenesState> =>
     mapActiveItems(st, (items) => items.map((i) => (i.id === itemId ? resizeItem(i, corner, dx, dy) : i)));
+}
+
+/** Commit an ABSOLUTE rect for an item (pinch-to-resize / UI-thread gesture commit).
+ *  The geometry is clamped by the shared `setItemRect` so web + mobile agree. */
+export function setItemRectById(itemId: string, rect: Rect) {
+  return (st: ScenesState): Partial<ScenesState> =>
+    mapActiveItems(st, (items) => items.map((i) => (i.id === itemId ? setItemRect(i, rect) : i)));
 }
 
 export function setItemFitById(itemId: string, fit: FitMode) {

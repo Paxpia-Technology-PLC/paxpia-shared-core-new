@@ -73,6 +73,14 @@ export function resizeItem(item: LayoutItem, corner: ResizeCorner, dx: number, d
   return { ...item, rect: clampRect({ x, y, w, h }) };
 }
 
+/** Set an item to an ABSOLUTE normalized rect, clamped inside the frame. Used by
+ *  pinch-to-resize and any gesture that computes its FINAL rect directly (rather than
+ *  an incremental delta) and commits once — the live drag/pinch runs on the device's
+ *  UI thread, then commits the resulting rect here. Pure — returns a new item. */
+export function setItemRect(item: LayoutItem, rect: Rect): LayoutItem {
+  return { ...item, rect: clampRect(rect) };
+}
+
 /** Set an item's fit mode (contain↔cover). Pure helper for the per-item toggle. */
 export function setItemFit(item: LayoutItem, fit: FitMode): LayoutItem {
   return { ...item, fit };

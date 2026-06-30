@@ -43,6 +43,7 @@ export {
   removeItem,
   moveItemBy,
   resizeItemBy,
+  setItemRectById,
   setItemFitById,
   bumpItemZ,
   moveItemZById,
