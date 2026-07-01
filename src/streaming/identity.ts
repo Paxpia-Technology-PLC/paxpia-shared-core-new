@@ -101,3 +101,80 @@ export function findActiveRoomByUsername<R>(
   }
   return null;
 }
+
+// ── CANONICAL ROOM IDENTITY (entity-derived, persistent) ──────────────────────
+// The LiveKit room name has historically been ephemeral —
+// `fmt.Sprintf("live-%s-%d", userID, unixMillis)` — so it changes every go-live and a
+// viewer routed to yesterday's room name finds nothing. The fix (plan §1g/§1h) is a
+// STABLE, entity-derived room key: `live:{entityId}`. "entity" is whatever the room
+// is anchored to — a creator's user id, a class id, a scheduled-event id — so the
+// same entity re-uses the same room name across sessions and a viewer can be routed by
+// id/username/slug and re-subscribe when a NEW session starts under the same key.
+
+/** The canonical `live:` room-name prefix. Kept here so web + mobile + the (future)
+ *  backend derive the identical string and can't drift. */
+export const LIVE_ROOM_PREFIX = 'live:';
+
+/** Build the canonical, persistent LiveKit room name for an entity: `live:{entityId}`.
+ *  Stable across go-lives (unlike the legacy `live-{uid}-{ms}`), so routing + rejoin
+ *  key off the ENTITY, not a per-session timestamp. Trims + guards an empty id
+ *  (returns '' so callers can treat it as "no room" rather than `live:`). PURE. */
+export function roomNameForEntity(entityId: string | null | undefined): string {
+  const id = (entityId ?? '').trim();
+  return id ? `${LIVE_ROOM_PREFIX}${id}` : '';
+}
+
+/** True iff `roomName` is a canonical entity-derived room name (`live:{...}`), vs a
+ *  legacy ephemeral `live-{uid}-{ms}` name. Lets a consumer tell the two apart. */
+export function isCanonicalRoomName(roomName: string | null | undefined): boolean {
+  return !!roomName && roomName.startsWith(LIVE_ROOM_PREFIX) && roomName.length > LIVE_ROOM_PREFIX.length;
+}
+
+/** Extract the entity id from a canonical `live:{entityId}` room name (or '' when the
+ *  name isn't canonical). Inverse of {@link roomNameForEntity}. PURE. */
+export function entityIdFromRoomName(roomName: string | null | undefined): string {
+  if (!isCanonicalRoomName(roomName)) return '';
+  return roomName!.slice(LIVE_ROOM_PREFIX.length);
+}
+
+/** The ways a live room can be addressed from a route: by the entity `id`, by the
+ *  streamer's `username`, or by a URL `slug`. At least one should be set; `id` wins
+ *  when several are (it's the most direct). Mirrors the web routes
+ *  `/live/:id | /live/:username | /live/:username/:slug` (plan §1j). */
+export interface RoomAlias {
+  id?: string | null;
+  username?: string | null;
+  slug?: string | null;
+}
+
+/** The resolved lookup KEY for a {@link RoomAlias}, telling the caller HOW to find the
+ *  room:
+ *   • kind 'entity'   → `key` is a canonical `live:{id}` room name; connect directly.
+ *   • kind 'username' → `key` is a normalized handle; resolve via the active-rooms
+ *                       listing (`findActiveRoomByUsername`) or the social profile.
+ *   • kind 'slug'     → `key` is the raw slug; resolve via the backend alias endpoint.
+ *   • kind 'none'     → nothing addressable was supplied.
+ *  `key` is always trimmed/normalized so it's a stable map key. */
+export interface ResolvedRoomAlias {
+  kind: 'entity' | 'username' | 'slug' | 'none';
+  key: string;
+}
+
+/** Map any of id / username / slug to a single room lookup key + strategy. PURE — no
+ *  fetch; the caller performs the actual lookup per `kind`. Precedence: id (direct,
+ *  canonical) → username (listing/profile resolve) → slug (backend alias). This is the
+ *  ONE place the route params collapse into a lookup, so web + mobile resolve
+ *  `/live/:id | /live/:username | /live/:username/:slug` the same way.
+ *
+ *  Note: when BOTH username + slug are present (the `/live/:username/:slug` route),
+ *  `id` still wins if also given; otherwise the slug is the more specific key, so it
+ *  takes precedence over the bare username. */
+export function resolveRoomAlias(alias: RoomAlias): ResolvedRoomAlias {
+  const id = (alias.id ?? '').trim();
+  if (id) return { kind: 'entity', key: roomNameForEntity(id) };
+  const slug = (alias.slug ?? '').trim();
+  if (slug) return { kind: 'slug', key: slug };
+  const username = normalizeUsername(alias.username);
+  if (username) return { kind: 'username', key: username };
+  return { kind: 'none', key: '' };
+}

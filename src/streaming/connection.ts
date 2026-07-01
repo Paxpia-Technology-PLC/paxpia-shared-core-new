@@ -288,6 +288,84 @@ export function canRejoin(status: RoomStatus): boolean {
   return status === 'unavailable' || status === 'offline' || status === 'error';
 }
 
+// ── OLD-ROOM → NEW-ROOM REDIRECT (streamer restarted under the same entity) ───────
+//
+// The disconnect machine above lands a viewer on 'unavailable' when THEIR room ended.
+// But if the streamer starts a NEW session, the OLD room is gone yet the streamer is
+// live again under a DIFFERENT room name (with the legacy ephemeral naming, a new
+// `live-{uid}-{ms}`; with the canonical naming, the SAME `live:{entityId}`). A viewer
+// sitting on the dead room must MIGRATE to the new room and immediately re-subscribe
+// its media feed + data channel (chat/gifting) — not just sit on "offline" until a
+// manual rejoin. This is the pure signal that decides that migration.
+//
+// It's ENTITY-anchored: a viewer watching entity E who got disconnected checks the
+// current active-rooms listing for E; if a room for E exists whose room name differs
+// from the one they were on, that's the redirect target. `unavailable` stays the
+// null-stream state for when E has NO active room (the streamer is simply offline).
+
+/** The room the viewer is on, plus the entity it's anchored to, for redirect checks. */
+export interface ViewerRoomRef {
+  /** The room name the viewer is currently connected to (or was, before it ended). */
+  currentRoomName: string;
+  /** The entity the viewer is watching (creator/class/event id). The redirect only
+   *  fires for a NEW room under the SAME entity — never cross-entity. */
+  entityId: string;
+}
+
+/** A candidate active room from the listing, reduced to what the redirect needs. */
+export interface ActiveRoomRef {
+  roomName: string;
+  entityId: string;
+}
+
+/** The redirect decision. `redirect: true` + `toRoomName` means "the streamer is live
+ *  again under a NEW room for this entity — tear down the dead room and re-connect +
+ *  re-subscribe feed+data to `toRoomName`". `redirect: false` means stay put:
+ *   • reason 'same-room'   — the entity's active room IS the one we're on (a transient
+ *                            drop; let the SDK reconnect, don't churn a redirect).
+ *   • reason 'no-active'   — the entity has NO active room → it's genuinely offline;
+ *                            the UI holds 'unavailable' (the null-stream state).
+ *   • reason 'no-entity'   — we don't know which entity we were watching → can't redirect. */
+export interface RoomRedirect {
+  redirect: boolean;
+  toRoomName?: string;
+  reason: 'new-room' | 'same-room' | 'no-active' | 'no-entity';
+}
+
+/** Decide whether a disconnected viewer should MIGRATE to a fresh room the streamer
+ *  started under the same entity. PURE — the render layer supplies its current room
+ *  ref + the latest active-rooms listing (already fetched for the live grid) and gets
+ *  back a redirect target (or a "stay"/"offline" verdict). No fetch, no navigation.
+ *
+ *  Contract:
+ *   • Find the FIRST active room whose `entityId` equals the viewer's `entityId`.
+ *   • If none → { redirect:false, reason:'no-active' }  → the streamer is offline;
+ *     the UI keeps `unavailable` (null-stream). This is the ONLY offline verdict.
+ *   • If one exists AND its roomName differs from the viewer's current room →
+ *     { redirect:true, toRoomName } → migrate + re-subscribe.
+ *   • If it's the SAME roomName → { redirect:false, reason:'same-room' } → a transient
+ *     drop; let the SDK's own reconnect handle it (no churn). */
+export function computeRoomRedirect(
+  viewer: ViewerRoomRef | null | undefined,
+  activeRooms: readonly ActiveRoomRef[],
+): RoomRedirect {
+  const entityId = (viewer?.entityId ?? '').trim();
+  if (!entityId) return { redirect: false, reason: 'no-entity' };
+  const match = activeRooms.find((r) => r.entityId === entityId);
+  if (!match) return { redirect: false, reason: 'no-active' };
+  if (match.roomName === viewer!.currentRoomName) return { redirect: false, reason: 'same-room' };
+  return { redirect: true, toRoomName: match.roomName, reason: 'new-room' };
+}
+
+/** Should the viewer attempt a room redirect right now? True only in the terminal/
+ *  offline states where the SDK will NOT self-recover the SESSION (so a new room won't
+ *  be found by the SDK's own reconnect) — i.e. `unavailable` / `offline`. While the SDK
+ *  is still connecting/reconnecting we let IT work; while `live` there's nothing to do.
+ *  Pairs with {@link computeRoomRedirect}: this gates WHEN to check, that decides WHERE. */
+export function shouldCheckRedirect(status: RoomStatus): boolean {
+  return status === 'unavailable' || status === 'offline';
+}
+
 // ── TRACK RECOVERY — the "session is alive but the VIDEO TRACK vanished" machine ──
 //
 // The disconnect machine above only fires once the SESSION drops (ConnectionState →

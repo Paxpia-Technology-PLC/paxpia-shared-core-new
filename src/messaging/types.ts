@@ -24,7 +24,21 @@ export type MessageKind =
   | 'call_log'
   | 'system';
 
-export type ThreadKind = 'dm' | 'group';
+/** The thread shapes:
+ *   • 'dm'      — 1:1 direct message (exactly two participants; everyone posts).
+ *   • 'group'   — many-participant chat; EVERYONE posts (owner/admin can moderate).
+ *   • 'channel' — broadcast thread: only `owner`/`admin` may POST, `member` reads +
+ *                 reacts. (Telegram-style.) Append-only union — never recycle. */
+export type ThreadKind = 'dm' | 'group' | 'channel';
+
+/** A participant's authority WITHIN a thread (distinct from the external staff
+ *  `moderator` grant, which is not a participant role — see ./permissions.ts):
+ *   • 'owner'  — the thread creator; the single un-demotable authority.
+ *   • 'admin'  — a promoted participant (Telegram-style); can post in channels,
+ *                delete any message, promote/demote members (not the owner).
+ *   • 'member' — a regular participant; posts in dm/group, reads + reacts in a
+ *                channel, deletes only their OWN messages (≤24h everyone-scope). */
+export type ParticipantRole = 'owner' | 'admin' | 'member';
 
 /** The 8-emoji reaction palette the backend enforces (wire.AllowedReactions). */
 export const ALLOWED_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏', '🔥', '🎉'] as const;
@@ -105,6 +119,19 @@ export interface Message {
   deleted_for_everyone?: boolean;
   reactions_summary?: ReactionSummary[];
   idempotency_key?: string;
+  /** Pinned to the top of the thread by an owner/admin (or the poster, per policy).
+   *  Snake wire field: `pinned`. */
+  pinned?: boolean;
+  /** Moderation lifecycle, server-authoritative (mirrors messaging DB
+   *  `moderation_status`): 'visible' (default), 'blocked' (a `moderator` override-
+   *  deleted it — kept as a tombstone, hidden from non-staff), or 'flagged'
+   *  (reported, pending review). Absent ⇒ treat as 'visible'. */
+  moderation_status?: 'visible' | 'blocked' | 'flagged' | string;
+  /** CLIENT-ONLY delivery state for an optimistic row (never sent to the server):
+   *  'sending' while in flight, 'failed' once queued to the offline outbox. Absent
+   *  on any server-returned row (which is, by definition, delivered). The UI renders
+   *  this as the receipt tick / a retry affordance. */
+  send_status?: 'sending' | 'failed';
 }
 
 export interface Participant {
@@ -112,7 +139,10 @@ export interface Participant {
   display_name?: string;
   avatar_url?: string;
   joined_at_unix: number;
-  role: 'admin' | 'member' | string;
+  /** Authority within the thread. `owner` is the creator; `admin` is promoted.
+   *  Widened from `admin|member` — old rows without an owner are backfilled
+   *  server-side (migration 002). */
+  role: ParticipantRole | string;
   last_read_message_id?: string;
   is_online?: boolean;
   last_seen_at_unix?: number;
@@ -229,6 +259,7 @@ export interface ClientFrame {
 export function messagePreview(m: Message | undefined): string {
   if (!m) return '';
   if (m.deleted_for_everyone) return 'Message deleted';
+  if (m.moderation_status === 'blocked') return 'Message removed';
   switch (m.kind) {
     case 'text':
     case 'system':
@@ -261,7 +292,9 @@ export function threadTitle(t: Thread, selfId?: string): string {
   const handled = others.find((p) => (p.user_id ?? '').trim());
   // Fall back to a short id slice, NEVER the full UUID as a name.
   if (handled) return `@${handled.user_id.slice(0, 8)}`;
-  return t.kind === 'group' ? 'Group' : 'Direct message';
+  if (t.kind === 'group') return 'Group';
+  if (t.kind === 'channel') return 'Channel';
+  return 'Direct message';
 }
 
 /** The other participant in a DM (the one that isn't `selfId`), if resolvable. */
