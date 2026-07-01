@@ -133,10 +133,16 @@ export interface MessagingSession {
     messageId: string,
     opts?: { scope?: 'me' | 'everyone'; cascade?: boolean },
   ) => Promise<void>;
+  /** Create (or return the existing) 1:1 DM thread with a peer user. Prepends +
+   *  returns it (idempotent server-side — a repeat call yields the same thread). */
+  createDM: (peerUserId: string) => Promise<Thread>;
   /** Create a group thread (creator = owner; everyone posts). Prepends + returns it. */
   createGroup: (participantIds: string[], title?: string, avatarUrl?: string) => Promise<Thread>;
   /** Create a broadcast channel (creator = owner; only owner/admin post). */
   createChannel: (participantIds: string[], title?: string, avatarUrl?: string) => Promise<Thread>;
+  /** Edit an own text message's body (author only; server-enforced). Swaps the row
+   *  in place (upsert by id) so the edited text + `edited_at` render immediately. */
+  editMessage: (threadId: string, messageId: string, bodyText: string) => Promise<void>;
   /** Add a participant to a group/channel (owner/admin only). Refreshes the thread. */
   addMember: (threadId: string, userId: string) => Promise<void>;
   /** Remove/kick a participant (owner/admin only). Refreshes the thread. */
@@ -368,6 +374,18 @@ export function useMessaging({
     [api],
   );
 
+  const editMessage = useCallback(
+    async (_threadId: string, messageId: string, bodyText: string) => {
+      // Server returns the updated row (same id) → upsertMessage replaces it in place
+      // (store dedups by id) so the new body + `edited_at` render immediately; a WS
+      // fanout that races reconciles to the same row. threadId is accepted for a
+      // symmetric signature with the other actions (the id alone locates the row).
+      const saved = await api.editMessage(messageId, bodyText);
+      dispatch({ t: 'upsertMessage', message: saved });
+    },
+    [api],
+  );
+
   // Insert a freshly-created thread into state + subscribe the socket to it (so its
   // fanouts arrive). `thread_update` upserts a full thread; upsertThread reorders it
   // by last-activity. The socket subscription is best-effort (null when REST-only).
@@ -375,6 +393,15 @@ export function useMessaging({
     dispatch({ t: 'frame', frame: { type: 'thread_update', thread: t }, selfId: selfIdRef.current });
     socketRef.current?.subscribeThreads([{ thread_id: t.id, last_seen_message_id: t.last_message?.id }]);
   }, []);
+
+  const createDM = useCallback(
+    async (peerUserId: string) => {
+      const t = await api.createDM(peerUserId);
+      registerThread(t);
+      return t;
+    },
+    [api, registerThread],
+  );
 
   const createGroup = useCallback(
     async (participantIds: string[], title?: string, avatarUrl?: string) => {
@@ -446,6 +473,8 @@ export function useMessaging({
       toggleReaction,
       markRead,
       deleteMessage,
+      editMessage,
+      createDM,
       createGroup,
       createChannel,
       addMember,
@@ -465,6 +494,8 @@ export function useMessaging({
       toggleReaction,
       markRead,
       deleteMessage,
+      editMessage,
+      createDM,
       createGroup,
       createChannel,
       addMember,
