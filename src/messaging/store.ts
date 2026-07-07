@@ -249,9 +249,28 @@ export function applyServerFrame(state: MessagingState, frame: ServerFrame, self
       return state;
     case 'thread_update':
       return frame.thread ? upsertThread(state, frame.thread) : state;
+    case 'presence': {
+      // Flip a peer's online marker across every thread they're in. Typing is
+      // surfaced by the socket layer per open thread, not the converged store.
+      if (!frame.presence) return state;
+      const pr = frame.presence;
+      let touched = false;
+      const next = state.threads.map(t => {
+        if (!t.participants?.some(p => p.user_id === pr.user_id)) return t;
+        touched = true;
+        return {
+          ...t,
+          participants: t.participants.map(p =>
+            p.user_id === pr.user_id
+              ? { ...p, is_online: pr.state === 'online', last_seen_at_unix: pr.last_seen_at_unix ?? p.last_seen_at_unix }
+              : p,
+          ),
+        };
+      });
+      return touched ? { ...state, threads: next } : state;
+    }
     case 'heartbeat':
     case 'typing':
-    case 'presence':
     default:
       return state;
   }

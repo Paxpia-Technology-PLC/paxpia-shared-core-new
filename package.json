@@ -21,7 +21,8 @@
     "./teaching": "./src/teaching/index.ts",
     "./messaging": "./src/messaging/index.ts",
     "./search": "./src/search/index.ts",
-    "./feed": "./src/feed/index.ts"
+    "./feed": "./src/feed/index.ts",
+    "./calling": "./src/calling/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
