@@ -43,9 +43,14 @@ export {
   removeItem,
   moveItemBy,
   resizeItemBy,
+  setItemRectById,
   setItemFitById,
   bumpItemZ,
   moveItemZById,
+  // Scene-name rules (1..12 chars), shared by web + mobile UI + the API.
+  SCENE_NAME_MAX_LEN,
+  clampSceneName,
+  isValidSceneName,
 } from './scenes';
 
 // ── Assignments model ────────────────────────────────────────────────────────

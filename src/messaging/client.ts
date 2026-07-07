@@ -6,48 +6,91 @@
 // interface is token-free.
 
 import { timers, type TimerHandle } from './timers';
+import type { DeleteScope } from './permissions';
 import type {
   ClientFrame,
   ListMessagesResponse,
   ListThreadsResponse,
   Message,
+  ParticipantRole,
   SendMessagePayload,
   ServerFrame,
   SubscribeCursor,
   Thread,
 } from './types';
 
+/** Read-side options carried on list/get. `asModerator` requests the STEALTH read
+ *  path (plan §1a/§1d): a staff `moderator` reads any dm/group/channel WITHOUT being
+ *  a participant and WITHOUT emitting read-receipt / presence side-effects. The impl
+ *  forwards this to the server (which honors it only when the caller actually holds
+ *  the `moderator` grant); a non-staff caller passing it gets a normal 403/empty. */
+export interface ReadOptions {
+  asModerator?: boolean;
+}
+
+/** Options for a delete: the `scope` ('me' vs 'everyone') and whether an everyone-
+ *  scope delete CASCADES to replies (soft-deletes messages whose `reply_to_id` == the
+ *  deleted id). Cascade defaults ON for everyone-scope server-side; pass `cascade:
+ *  false` to opt out where the contract allows. */
+export interface DeleteMessageOptions {
+  scope: DeleteScope;
+  /** Cascade the soft-delete to replies (everyone-scope only). Default: true. */
+  cascade?: boolean;
+}
+
 /** The REST surface the messaging service exposes through the gateway under
  *  `/api/v1/messaging/...`. All methods are async + may reject; the UI handles
  *  optimistic rollback. Returns mirror the wire shapes in ./types.ts. */
 export interface MessagingApi {
-  /** List the caller's conversations (cursor-paginated; 25/page default). */
-  listThreads(opts?: { limit?: number; cursor?: string; includeArchived?: boolean }): Promise<ListThreadsResponse>;
-  /** Fetch one thread (incl. participants). */
-  getThread(threadId: string): Promise<Thread>;
+  /** List the caller's conversations (cursor-paginated; 25/page default). Pass
+   *  `read.asModerator` for the staff stealth read (all threads, no side-effects). */
+  listThreads(
+    opts?: { limit?: number; cursor?: string; includeArchived?: boolean },
+    read?: ReadOptions,
+  ): Promise<ListThreadsResponse>;
+  /** Fetch one thread (incl. participants). `read.asModerator` bypasses the
+   *  participant gate for staff (stealth). */
+  getThread(threadId: string, read?: ReadOptions): Promise<Thread>;
   /** Create (or return the existing) DM thread with a peer user. */
   createDM(peerUserId: string): Promise<Thread>;
-  /** Create a group thread. */
+  /** Create a group thread (creator row = `role='owner'`; everyone posts). */
   createGroup(participantIds: string[], title?: string, avatarUrl?: string): Promise<Thread>;
-  /** Page a thread's messages (newest first when cursor empty). */
-  listMessages(threadId: string, opts?: { limit?: number; cursor?: string }): Promise<ListMessagesResponse>;
+  /** Create a broadcast CHANNEL (creator = `owner`; only owner/admin post). Same
+   *  wire endpoint as createGroup with `kind:'channel'` — see plan §1b. */
+  createChannel(participantIds: string[], title?: string, avatarUrl?: string): Promise<Thread>;
+  /** Page a thread's messages (newest first when cursor empty). `read.asModerator`
+   *  bypasses the participant gate + suppresses read-receipt writes (stealth). */
+  listMessages(
+    threadId: string,
+    opts?: { limit?: number; cursor?: string },
+    read?: ReadOptions,
+  ): Promise<ListMessagesResponse>;
   /** Send a message of any kind. Returns the created server row. */
   sendMessage(threadId: string, payload: SendMessagePayload): Promise<Message>;
   /** Edit a text message's body. */
   editMessage(messageId: string, bodyText: string): Promise<Message>;
-  /** Delete a message ("me" or "everyone"; idempotent). */
-  deleteMessage(messageId: string, scope: 'me' | 'everyone'): Promise<void>;
+  /** Delete a message (idempotent). `opts.scope` = 'me' | 'everyone'; an
+   *  everyone-scope delete CASCADES to replies unless `opts.cascade === false`.
+   *  Authority is server-enforced per plan §1a (poster ≤24h / owner|admin / moderator). */
+  deleteMessage(messageId: string, opts: DeleteMessageOptions): Promise<void>;
   /** Add a reaction (one of the 8 allowed). */
   reactTo(messageId: string, reaction: string): Promise<void>;
   /** Remove a reaction. */
   unreactTo(messageId: string, reaction: string): Promise<void>;
   /** Mark a thread read up to a message id. */
   markRead(threadId: string, upToMessageId: string): Promise<void>;
+  /** Add a participant to a group/channel (owner/admin only, server-enforced). */
+  addParticipant?(threadId: string, userId: string): Promise<void>;
+  /** Remove/kick a participant (owner/admin only). */
+  removeParticipant?(threadId: string, userId: string): Promise<void>;
+  /** Promote/demote a participant's role. Caller must be owner/admin; the owner is
+   *  un-demotable (plan §1b). Emits a `system` message ("X promoted Y"). */
+  setParticipantRole?(threadId: string, userId: string, role: ParticipantRole): Promise<void>;
   /** Mute/unmute thread notifications. */
   muteThread?(threadId: string, value: boolean): Promise<void>;
   /** Archive/unarchive a thread. */
   archiveThread?(threadId: string, value: boolean): Promise<void>;
-  /** Leave a (group) thread. */
+  /** Leave a (group/channel) thread. */
   leaveThread?(threadId: string): Promise<void>;
 }
 
@@ -55,6 +98,44 @@ export interface MessagingApi {
  *  retry after a flaky network never double-posts). Shared so web + mobile agree. */
 export function genIdempotencyKey(): string {
   return `m-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+// ─── Offline outbox (platform-free persistence seam) ─────────────────────────
+//
+// A send that fails while offline is queued here and flushed on reconnect. The
+// SAME idempotency_key rides the retry, so a message that actually landed (but whose
+// ACK we lost) is de-duped server-side — never double-posted. Persistence is the
+// platform's concern (mobile: MMKV/AsyncStorage; web: localStorage; tests: memory),
+// so core takes an injectable store and ships an in-memory default. Platform-free.
+
+/** One queued send awaiting a flush. Mirrors mobile's `OutboxItem`. */
+export interface OutboxItem {
+  threadId: string;
+  kind: SendMessagePayload['kind'];
+  bodyText?: string;
+  replyToId?: string;
+  idempotencyKey: string;
+  createdAtUnix: number;
+}
+
+/** The persistence seam for the offline outbox. Synchronous (a small JSON blob), so
+ *  the flush loop stays simple. The platform binds a durable KV; core defaults to
+ *  {@link createMemoryOutboxStore} (fine for web/session + tests). */
+export interface OutboxStore {
+  load(): OutboxItem[];
+  save(items: OutboxItem[]): void;
+}
+
+/** An in-memory {@link OutboxStore} (default). No durability across reloads — the
+ *  platform swaps in a KV-backed store for that. Pure + dependency-free. */
+export function createMemoryOutboxStore(): OutboxStore {
+  let items: OutboxItem[] = [];
+  return {
+    load: () => items.slice(),
+    save: (next) => {
+      items = next.slice();
+    },
+  };
 }
 
 // ─── Realtime WebSocket client (platform-agnostic) ───────────────────────────

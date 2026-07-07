@@ -9,7 +9,20 @@ export type Monetization = 'free' | 'paid';
 
 export interface StreamMeta {
   id: string;
+  /** The LiveKit room name for THIS live SESSION. Historically ephemeral —
+   *  `fmt.Sprintf("live-%s-%d", userID, unixMillis)` — so it changes every go-live.
+   *  Kept for back-compat with rooms-payload consumers; prefer `livekitRoomId` for
+   *  a stable, entity-derived room key (see identity.ts `roomNameForEntity`). */
   roomName: string;
+  /** The PERSISTENT, entity-derived LiveKit room id: canonical `live:{entityId}`
+   *  (see identity.ts). Stable across go-lives for the same entity (a creator, a
+   *  class, a scheduled event), so a viewer can be routed by entity/username/slug
+   *  and re-subscribe when the streamer starts a NEW session. Absent on legacy
+   *  payloads that only carry the ephemeral `roomName`. */
+  livekitRoomId?: string;
+  /** A URL-friendly alias for the stream (e.g. a class code / vanity path segment),
+   *  resolvable via identity.ts `resolveRoomAlias`. Optional. */
+  slug?: string;
   title: string;
   creatorId: string;
   kind: StreamKind;

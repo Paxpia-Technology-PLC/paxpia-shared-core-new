@@ -4,5 +4,6 @@
 // impl is per-platform behind `MessagingApi` + the socket factory.
 export * from './types';
 export * from './store';
+export * from './permissions';
 export * from './client';
 export * from './hooks';

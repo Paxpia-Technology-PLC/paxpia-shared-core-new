@@ -27,7 +27,7 @@ import {
 } from '../streaming/live';
 import { docAnnotationStateFor, docAnnotationDocId, type DocAnnotationState } from '../overlays/annotation';
 import type { DocPayload, OverlayInstance } from '../overlays/types';
-import { buildManifest } from '../streaming/viewer';
+import { buildManifest, manifestEntry } from '../streaming/viewer';
 import { getCachedDoc } from '../streaming/preload';
 import { buildRenderedScene } from '../streaming/scene';
 import { deriveManifest } from '../streaming/prep';
@@ -90,6 +90,7 @@ function initialState(): DirectorState {
     preloadProgress: 1,
     docPresenter: null,
     servedDocs: {},
+    servingDocs: {},
     sceneNonce: 0,
     docAnn: null,
     wbSettings: {},
@@ -157,6 +158,11 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
   let gen = 0;
   // The id of the participation overlay the STREAMER chose (P0.2 streamer-authoritative).
   let localOverlayId: string | null = null;
+  // The (id, gen) of the participation round the streamer just CLOSED via "None". The bot
+  // keeps `current` pointed at the closed overlay and re-echoes it (overlay.changed, same
+  // id+gen) on close + on join, so without this the cleared slot snaps back to that quiz.
+  // We ignore echoes of this exact round until a NEW activation bumps gen / changes id.
+  let closedOverlay: { id: string; gen: number } | null = null;
   // Per-overlay LAST gen the streamer used (overlay id → gen), so re-serving the SAME
   // overlay reuses its gen and votes PERSIST across a swap-out-and-back (P1.4).
   const overlayGens = new Map<string, number>();
@@ -164,6 +170,8 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
   let scenesUnsub: (() => void) | null = null;
   // Unsubscribe for the media seam's "published video track lost" safety-net hook.
   let videoLostUnsub: (() => void) | null = null;
+  // Unsub for the compositor's "output track ready" callback (RN async composite mint).
+  let compositorReadyUnsub: (() => void) | null = null;
   // Guards against re-entrant recovery (a track-lost event firing while we're already
   // re-provisioning + republishing).
   let recoveringVideo = false;
@@ -395,6 +403,11 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
         // back to LiveKit, not just the local preview"). Web omits the hook (stable
         // canvas track), so optional-chaining = no-op there.
         videoLostUnsub = media.onVideoTrackLost?.(() => void recoverVideoTrack()) ?? null;
+        // The mobile composite output track is minted ASYNC; when it first resolves,
+        // republish so the composite shows on its OWN scene at go-live (without it, the
+        // first publish above is the passthrough primary / null and the composite only
+        // appeared on the next scene switch, then dropped). Web omits the hook (no-op).
+        compositorReadyUnsub = compositor.onOutputTrackReady?.(() => { void republishOutputTrack(); }) ?? null;
       }
 
       // Mic: best-effort with video, REQUIRED in audio-only (the media seam throws).
@@ -405,7 +418,7 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
       disableAggregator = channel.enableAggregator(() => state.activeOverlay);
       // The bot owns the participation overlay slot; route its echo there (P0.2).
       channel.onOverlayChanged((e) => {
-        const decision = reconcileOverlayChanged(e.overlay, state.activeOverlay, localOverlayId);
+        const decision = reconcileOverlayChanged(e.overlay, state.activeOverlay, localOverlayId, closedOverlay);
         if (decision.action === 'ignore') return;
         if (decision.action === 'clear') {
           set({ activeOverlay: null });
@@ -417,6 +430,8 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
       });
       channel.onResults((r) =>
         set((s) => {
+          // Ignore a late results tick for a round the streamer just closed (don't repopulate).
+          if (closedOverlay && r.overlayId === closedOverlay.id && r.gen <= closedOverlay.gen) return {};
           const a = s.activeOverlay;
           const { adopt, gen: g } = reconcileResultsGen(a, r.overlayId, r.gen);
           return adopt ? { results: r, activeOverlay: { ...a!, gen: g } } : { results: r };
@@ -442,10 +457,13 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
         // Tell the compositor to hot-swap. On web the output track is STABLE (only its
         // content changes); on RN's single-source passthrough the output track CHANGES to
         // the new scene's primary camera — so after the new media is provisioned we must
-        // RE-PUBLISH that track to the SFU (otherwise the SFU keeps the OLD, now-stale
-        // track and the viewer's video drops on every scene switch — WI-8). Re-seed the
-        // scene + bindings first so a newly-composed scene paints correctly.
-        seedCompositorScene(nextId);
+        // RE-PUBLISH that track to the SFU (otherwise the SFU keeps the OLD, now-stale track
+        // and the viewer's video drops on every scene switch — WI-8).
+        // Flip the active scene NOW (so useComposite() reflects it for already-live shared
+        // sources), but do NOT eager-seed here: the eager seed pushed a layout for sources
+        // not yet live AND double-seeded with the post-provision seed below, thrashing the
+        // native sinks and momentarily dropping the composite (~2s flash). The authoritative
+        // seed + republish run ONCE after provision (below), when the new sources are live.
         compositor?.setActiveScene(nextId);
         // Acquire the new scene's media, THEN republish the (possibly changed) output track
         // and re-broadcast layout + overlays. Provision is sequenced (awaited) before the
@@ -508,6 +526,8 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
     } catch (e) {
       videoLostUnsub?.();
       videoLostUnsub = null;
+      compositorReadyUnsub?.();
+      compositorReadyUnsub = null;
       compositor?.stop();
       compositor = null;
       scenesUnsub?.();
@@ -535,6 +555,8 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
     }
     videoLostUnsub?.();
     videoLostUnsub = null;
+    compositorReadyUnsub?.();
+    compositorReadyUnsub = null;
     recoveringVideo = false;
     scenesUnsub?.();
     scenesUnsub = null;
@@ -553,6 +575,7 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
     }
     preloadCache = deps.newPreloadCache();
     localOverlayId = null;
+    closedOverlay = null;
     overlayGens.clear();
     annOn = false;
     scheduling.setActiveStream?.(null);
@@ -567,6 +590,7 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
       preloadProgress: 1,
       docPresenter: null,
       servedDocs: {},
+      servingDocs: {},
       sceneNonce: 0,
       audioOnly: false,
       provisioning: null,
@@ -606,6 +630,8 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
     const inst = buildInstance({ ...draft, id: draftId }, g);
     // Mark the streamer's CURRENT selection so a stale echo can't flash it back (P0.2).
     localOverlayId = inst.id;
+    // A new activation supersedes any closed-round guard (re-serving the SAME id must stick).
+    closedOverlay = null;
     channel.createAndActivate(inst);
     // Reflect it locally right away; the onOverlayChanged echo reconciles after.
     set((s) => ({ ...setSlot({ activeDoc: s.activeDoc, activeOverlay: s.activeOverlay }, inst), results: null }));
@@ -645,9 +671,10 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
     }
     const a = state.activeOverlay;
     if (channel && a) channel.closeOverlay(a.id);
-    // Streamer took the overlay down → drop the local selection so a later clear echo
-    // is honored and a new activation starts clean.
+    // Streamer took the overlay down → drop the local selection AND remember the closed
+    // round so the bot's re-assert echo (same id+gen, phase 'closed') can't snap it back.
     localOverlayId = null;
+    if (a && slotForKind(a.kind) === 'overlay') closedOverlay = { id: a.id, gen: a.gen };
     set((s) => ({ ...clearSlot({ activeDoc: s.activeDoc, activeOverlay: s.activeOverlay }, 'overlay') }));
     broadcastScene();
   }
@@ -685,7 +712,14 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
     const a = state.activeDoc;
     if (!a || a.kind !== 'doc') return;
     const payload = a.payload as DocPayload;
-    const clamped = Math.max(0, Math.min(page, payload.pages.length - 1));
+    // Effective page total: the rendered page blobs (web operator path) OR the manifest's
+    // pageCount (raw PDF/EPUB served by URL — `payload.pages` is EMPTY there, so the old
+    // `pages.length - 1` clamp collapsed EVERY page to 0 → next/prev no-op'd for PDF + EPUB).
+    // When neither is known yet (raw doc, no manifest count), don't cap — the frame clamps to
+    // its discovered page count and reports the real page back.
+    const entry = manifestEntry(state.manifest, a.id);
+    const total = Math.max(payload.pages.length, entry?.pageCount && entry.pageCount > 0 ? entry.pageCount : 0);
+    const clamped = total > 0 ? Math.max(0, Math.min(page, total - 1)) : Math.max(0, page);
     if (clamped === payload.page) return;
     const next = { ...a, payload: { ...payload, page: clamped } } as OverlayInstance;
     // A page flip PRESERVES the presenter ZOOM across pages (P1.3); only pan recentres.
@@ -776,25 +810,68 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
     return targetId;
   }
 
+  // Per-slot in-flight flag bookkeeping (sceneId → itemId → true) so the operator slot can
+  // show a LOADING spinner between the tap and the rendered doc. Pure set helper.
+  function markServing(sceneId: string, targetId: string, on: boolean): void {
+    set((s) => {
+      const sceneServing = { ...(s.servingDocs[sceneId] ?? {}) };
+      if (on) sceneServing[targetId] = true;
+      else delete sceneServing[targetId];
+      const servingDocs = { ...s.servingDocs };
+      if (Object.keys(sceneServing).length === 0) delete servingDocs[sceneId];
+      else servingDocs[sceneId] = sceneServing;
+      return { servingDocs };
+    });
+  }
+
   async function serveMaterialToSlot(material: DirectorMaterial, itemId?: string): Promise<string | null> {
-    if (!channel || state.status !== 'live') return null;
+    // Works in BOTH preview and live. The slot-target math is pure (no room needed); only the
+    // presigned grant needs a room scope. When NOT live, grant under the synthetic 'preview'
+    // scope (ownership is enforced server-side per-caller, mirroring web preview.ts) so the
+    // operator sees the doc in the scene preview BEFORE going live (the live-only guard here was
+    // the bug: a doc pick in preview silently did nothing).
     const { sceneId, slots } = sceneSlotsNow(state.servedDocs);
     const targetId = resolveDocServeTarget(slots, itemId);
     if (!targetId) return null; // no empty doc slot in this scene → NO-OP
-    const { roomName } = state;
-    let payload = getCachedDoc(preloadCache as never, material.id);
-    if (!payload && roomName) {
-      payload = await materialsRuntime.buildDocPayload(material, roomName);
-      preloadCache.set(material.id, { id: material.id, doc: payload, bytes: material.sizeBytes });
+
+    let built: DocPayload;
+    try {
+      // Fast path (live, pre-warmed) reads the cache; else grant on demand under the live room
+      // when live, otherwise the synthetic 'preview' scope.
+      let payload = getCachedDoc(preloadCache as never, material.id);
+      if (!payload) {
+        markServing(sceneId, targetId, true);
+        const roomName = state.roomName ?? 'preview';
+        payload = await materialsRuntime.buildDocPayload(material, roomName);
+        // Only cache under a REAL room — a 'preview'-scoped URL is short-lived and is re-granted
+        // on go-live via the manifest warm.
+        if (state.roomName) {
+          preloadCache.set(material.id, { id: material.id, doc: payload, bytes: material.sizeBytes });
+        }
+      }
+      built = payload;
+    } catch (e) {
+      markServing(sceneId, targetId, false);
+      set({ error: e instanceof Error ? e.message : 'Could not load document.' });
+      throw e;
     }
-    if (!payload) throw new Error('Room not ready yet.');
-    const built = payload;
+
     const inst = buildInstance({ id: `srv_${targetId}`, kind: 'doc', title: built.title, payload: built }, (gen += 1));
-    set((s) => ({
-      servedDocs: { ...s.servedDocs, [sceneId]: { ...(s.servedDocs[sceneId] ?? {}), [targetId]: inst } },
-      activeDoc: inst,
-      docPresenter: { page: built.page, zoom: 1, panX: 0, panY: 0 },
-    }));
+    set((s) => {
+      const sceneServing = { ...(s.servingDocs[sceneId] ?? {}) };
+      delete sceneServing[targetId];
+      const servingDocs = { ...s.servingDocs };
+      if (Object.keys(sceneServing).length === 0) delete servingDocs[sceneId];
+      else servingDocs[sceneId] = sceneServing;
+      return {
+        servedDocs: { ...s.servedDocs, [sceneId]: { ...(s.servedDocs[sceneId] ?? {}), [targetId]: inst } },
+        activeDoc: inst,
+        docPresenter: { page: built.page, zoom: 1, panX: 0, panY: 0 },
+        servingDocs,
+      };
+    });
+    // Broadcasts are internally guarded (no-op when not live), so calling them in preview is safe
+    // and keeps the live path byte-for-byte identical.
     broadcastLiveSync();
     broadcastScene();
     return targetId;
