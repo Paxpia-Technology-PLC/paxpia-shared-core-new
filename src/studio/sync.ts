@@ -43,6 +43,8 @@ import {
   type StorageAdapter,
   type StudioConfigBlob,
 } from './types';
+import { initialClassesState, type ClassesState, type KitItem, type LiveClass, type ScheduledSession } from '../classes/types';
+import type { ScheduledStream, TimelineItem } from '../scheduling/types';
 
 /** Blob schema version. Bump when the serialized shape changes incompatibly and add
  *  a migration in `migrateBlob`. Mirrors the zustand-persist versions the stores
@@ -77,6 +79,12 @@ export interface StudioSchedulingState {
   activeStreamId: string | null;
 }
 
+/** The slides-library store's slice the coordinator reads/writes (opaque payload —
+ *  owned by `@paxpia/core/slides`; this module only carries it through the blob). */
+export interface StudioSlidesState {
+  slides: unknown[];
+}
+
 /** Read the current auth identity + subscribe to its changes. */
 export interface AuthHandle {
   /** Current signed-in user id (null when logged out). */
@@ -95,6 +103,19 @@ export interface StudioSyncDeps {
   scenes: StoreHandle<ScenesState>;
   scheduling: StoreHandle<StudioSchedulingState>;
   assignments: StoreHandle<AssignmentsState<unknown>>;
+  /** The slides-library store. OPTIONAL: a platform with no Slide UI yet (e.g. web,
+   *  as of the mobile-only Slide feature) can omit this — the coordinator falls back
+   *  to an internal in-memory handle so a mobile-authored slides library still
+   *  round-trips losslessly through that platform's GET/PUT instead of being wiped
+   *  by a save with no slides state. */
+  slides?: StoreHandle<StudioSlidesState>;
+  /** The classes store (durable teaching units — `@paxpia/core/classes`). OPTIONAL
+   *  so an older build (pre-classes) keeps working; when bound, this is also what
+   *  runs the one-time `scheduled[]` → classes conversion (R5) for an existing
+   *  creator — additive and idempotent, so both platforms can arm it without
+   *  racing each other. Unbound, the coordinator leaves the blob's `classes` /
+   *  `sessions` / `activeClassId` fields untouched on save. */
+  classes?: StoreHandle<ClassesState>;
   auth: AuthHandle;
   client: StudioConfigClient;
   /** The offline-cache KV the store wrappers persist into (localStorage ↔ MMKV).
@@ -102,6 +123,103 @@ export interface StudioSyncDeps {
   storage?: StorageAdapter;
   /** Scene id generator (defaults to the shared `${prefix}_base36`). */
   idGen?: IdGen;
+}
+
+/** What the one-time `scheduled[]` → classes conversion (R5) reports — read by
+ *  `ClassListScreen`/`ClassesPage` so a creator can see (and fix) a gap, like a
+ *  slide reference that couldn't be carried over (Slides retired, D14). */
+export interface ClassMigrationResult {
+  /** Classes newly created by this run (empty when there was nothing to convert,
+   *  or everything had already been migrated). */
+  createdClassIds: string[];
+  /** Sessions newly created by this run. */
+  createdSessionIds: string[];
+  /** Human-readable, one per thing that couldn't be carried over. */
+  warnings: string[];
+}
+
+function emptyMigrationResult(): ClassMigrationResult {
+  return { createdClassIds: [], createdSessionIds: [], warnings: [] };
+}
+
+/**
+ * Convert each `scheduled[]` entry (a `ScheduledStream`) into one `LiveClass` +
+ * one `ScheduledSession` — pure, so it can run for real OR as a dry run.
+ *
+ *   ADDITIVE     — `scheduled[]` is never touched; a wrong conversion always has
+ *                  the originals to fall back on.
+ *   IDEMPOTENT   — the class/session ids are DERIVED from the source stream id,
+ *                  so running this against the same blob twice can't duplicate.
+ *   NEVER CLOBBERS — a stream already migrated (its derived id already exists in
+ *                  `existingClasses`) is skipped — a creator's own rename/re-equip
+ *                  since then is THEIRS, not overwritten by a re-run.
+ *
+ * What can't be carried (a `slide` timeline item — Slides retired, D14) is
+ * dropped from the kit and reported, never silently lost.
+ */
+function migrateScheduledToClasses(
+  scheduled: readonly ScheduledStream[],
+  existingClasses: readonly LiveClass[],
+  idGen: IdGen,
+): { classes: LiveClass[]; sessions: ScheduledSession[]; result: ClassMigrationResult } {
+  const existingIds = new Set(existingClasses.map((c) => c.id));
+  const classes: LiveClass[] = [];
+  const sessions: ScheduledSession[] = [];
+  const result = emptyMigrationResult();
+
+  for (const stream of scheduled) {
+    const classId = `class_migrated_${stream.id}`;
+    if (existingIds.has(classId)) continue; // already migrated — never re-touch it
+
+    const now = Date.now();
+    const kit: KitItem[] = [];
+    for (const item of (stream.items ?? []) as TimelineItem[]) {
+      if (item.kind === 'material') {
+        kit.push({ id: idGen('kit'), order: kit.length, kind: 'material', material: item.material });
+      } else if (item.kind === 'overlay') {
+        kit.push({ id: idGen('kit'), order: kit.length, kind: 'overlay', overlay: item.overlay });
+      } else if (item.kind === 'slide') {
+        result.warnings.push(`"${stream.title}": a reusable Slide couldn't be carried over (Slides retired)`);
+      }
+    }
+
+    classes.push({
+      id: classId,
+      name: stream.title || 'Untitled class',
+      visibility: stream.visibility === 'private' ? 'members' : 'public',
+      kit,
+      createdAt: now,
+      updatedAt: now,
+    });
+    result.createdClassIds.push(classId);
+
+    const sessionId = `sess_migrated_${stream.id}`;
+    sessions.push({ id: sessionId, classId, startUnix: stream.startUnix });
+    result.createdSessionIds.push(sessionId);
+  }
+
+  return { classes, sessions, result };
+}
+
+/** A minimal in-memory `StoreHandle` — used as the `slides` fallback when a
+ *  platform doesn't bind a real slides store, so `applyBlob`/`snapshotBlob` still
+ *  round-trip the field losslessly (no UI, no persistence beyond this instance's
+ *  lifetime, which is fine: a real load always precedes any save). */
+function memoryStoreHandle<S extends object>(initial: S): StoreHandle<S> {
+  let state = initial;
+  const listeners = new Set<(state: S, prev: S) => void>();
+  return {
+    getState: () => state,
+    setState: (partial) => {
+      const prev = state;
+      state = { ...state, ...partial };
+      listeners.forEach((l) => l(state, prev));
+    },
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
 }
 
 /** The coordinator's public surface — identical in name + behaviour to web's
@@ -122,6 +240,16 @@ export interface StudioSync {
   /** Push the current merged blob now (best-effort; logged out → no-op). Exposed for
    *  tests + explicit flush points. */
   flushNow(): Promise<void>;
+  /** What the last real `scheduled[]` → classes conversion carried over (R5), or
+   *  null when none has run yet this session. A live-updating property (not a
+   *  snapshot) — read it any time after a load. */
+  readonly lastMigration: ClassMigrationResult | null;
+  /** DRY RUN the conversion — reports exactly what WOULD be produced, touching no
+   *  store and sending nothing (R5's "inspect a real account first" valve). Pass a
+   *  raw blob to inspect it directly; omit it to dry-run against whatever the
+   *  scheduling store currently holds (already-loaded local state — no round trip
+   *  either way). */
+  dryRunMigration(blob?: RawStudioConfigBlob): ClassMigrationResult;
 }
 
 /** Build a studio-sync coordinator bound to the given stores + auth + config client.
@@ -129,13 +257,18 @@ export interface StudioSync {
  *  instance. */
 export function createStudioSync(deps: StudioSyncDeps): StudioSync {
   const { scenes, scheduling, assignments, auth, client } = deps;
+  const slides = deps.slides ?? memoryStoreHandle<StudioSlidesState>({ slides: [] });
+  const classes = deps.classes ?? memoryStoreHandle<ClassesState>(initialClassesState());
   const idGen = deps.idGen ?? defaultIdGen;
 
   let saveTimer: TimerHandle | null = null;
   let unsubScenes: (() => void) | null = null;
   let unsubScheduling: (() => void) | null = null;
   let unsubAssignments: (() => void) | null = null;
+  let unsubSlides: (() => void) | null = null;
+  let unsubClasses: (() => void) | null = null;
   let armed = false;
+  let lastMigrationResult: ClassMigrationResult | null = null;
   // True while applying a server snapshot, so the resulting store writes don't echo
   // back into a save (load → store-set → subscription → save loop).
   let hydrating = false;
@@ -147,6 +280,8 @@ export function createStudioSync(deps: StudioSyncDeps): StudioSync {
     const sc = scenes.getState();
     const st = scheduling.getState();
     const as = assignments.getState();
+    const sl = slides.getState();
+    const cl = classes.getState();
     return {
       version: STUDIO_BLOB_VERSION,
       scenes: sc.scenes,
@@ -157,6 +292,12 @@ export function createStudioSync(deps: StudioSyncDeps): StudioSync {
       // keeps its assignments across scene switches, reload, and devices (rule 7).
       assignments: as.assignments,
       lastInteracted: as.lastInteracted,
+      // The slides library — rides the SAME account blob (opaque to this module).
+      slides: sl.slides,
+      // Durable classes (v2) — see `@paxpia/core/classes`.
+      classes: cl.classes,
+      sessions: cl.sessions,
+      activeClassId: cl.activeClassId,
     };
   }
 
@@ -175,6 +316,8 @@ export function createStudioSync(deps: StudioSyncDeps): StudioSync {
       scenes.setState(initialScenesState(idGen));
       scheduling.setState({ scheduled: [], activeStreamId: null });
       assignments.setState({ assignments: {}, lastInteracted: {} });
+      slides.setState({ slides: [] });
+      classes.setState(initialClassesState());
     } finally {
       hydrating = false;
     }
@@ -226,9 +369,36 @@ export function createStudioSync(deps: StudioSyncDeps): StudioSync {
           ? (blob.lastInteracted as AssignmentsState<unknown>['lastInteracted'])
           : {};
       assignments.setState({ assignments: nextAssignments, lastInteracted: nextLastInteracted });
+
+      // The slides library. Default to empty so an older blob (pre-slides) hydrates
+      // cleanly without losing scenes/schedules.
+      const rawSlides = Array.isArray(blob.slides) ? (blob.slides as unknown[]) : [];
+      slides.setState({ slides: rawSlides });
+
+      // Durable classes (v2). Default to empty so a v1 blob (pre-classes) hydrates
+      // cleanly, then run the one-time scheduled[] → classes conversion (R5) against
+      // what was JUST hydrated above — additive + idempotent, so it's safe to run on
+      // every load (a stream already migrated is skipped, see migrateScheduledToClasses).
+      const rawClasses = Array.isArray(blob.classes) ? (blob.classes as LiveClass[]) : [];
+      const rawSessions = Array.isArray(blob.sessions) ? (blob.sessions as ScheduledSession[]) : [];
+      const rawActiveClassId = typeof blob.activeClassId === 'string' ? (blob.activeClassId as string) : null;
+      const migrated = migrateScheduledToClasses(scheduled as unknown as ScheduledStream[], rawClasses, idGen);
+      classes.setState({
+        classes: [...rawClasses, ...migrated.classes],
+        sessions: [...rawSessions, ...migrated.sessions],
+        activeClassId: rawActiveClassId,
+      });
+      if (migrated.result.createdClassIds.length > 0 || migrated.result.warnings.length > 0) {
+        lastMigrationResult = migrated.result;
+      }
     } finally {
       hydrating = false;
     }
+    // Persist itself (save-suppressed above via `hydrating`, so this can't recurse):
+    // a load that actually converted something schedules its own save, or the
+    // converted classes would sit in memory-only until the creator happened to
+    // edit something.
+    if (lastMigrationResult && lastMigrationResult.createdClassIds.length > 0) scheduleSave();
   }
 
   /** Push the current merged blob to the server (best-effort). Logged out → no-op. */
@@ -262,6 +432,8 @@ export function createStudioSync(deps: StudioSyncDeps): StudioSync {
     unsubScenes = scenes.subscribe(() => scheduleSave());
     unsubScheduling = scheduling.subscribe(() => scheduleSave());
     unsubAssignments = assignments.subscribe(() => scheduleSave());
+    unsubSlides = slides.subscribe(() => scheduleSave());
+    unsubClasses = classes.subscribe(() => scheduleSave());
   }
 
   /** Disarm. Called on logout. */
@@ -269,9 +441,13 @@ export function createStudioSync(deps: StudioSyncDeps): StudioSync {
     unsubScenes?.();
     unsubScheduling?.();
     unsubAssignments?.();
+    unsubSlides?.();
+    unsubClasses?.();
     unsubScenes = null;
     unsubScheduling = null;
     unsubAssignments = null;
+    unsubSlides = null;
+    unsubClasses = null;
     armed = false;
   }
 
@@ -279,7 +455,6 @@ export function createStudioSync(deps: StudioSyncDeps): StudioSync {
     const userId = auth.userId();
     if (!userId) return;
     if (syncedUserId === userId && armed) return; // already synced this user
-    syncedUserId = userId;
     // A genuinely DIFFERENT user just signed in (persona switch) → wipe the prior
     // user's scenes/schedules from memory+cache up front so they never bleed
     // through, even if THIS user has never saved server-side (version 0). On a plain
@@ -293,8 +468,15 @@ export function createStudioSync(deps: StudioSyncDeps): StudioSync {
       if (res && res.version > 0) {
         applyBlob(res.config);
       }
+      // Only mark this user "synced" on a successful round-trip. Setting this
+      // unconditionally (before the request) used to permanently skip every future
+      // load after a single transient failure (cold-start network hiccup, etc.) —
+      // the studio screen would silently stay on stale/empty local cache for the
+      // rest of the session since the guard above treats an attempt as done.
+      syncedUserId = userId;
     } catch {
-      /* server unreachable — keep the local cache; arming still enables later sync */
+      /* server unreachable — keep the local cache; leave `syncedUserId` unset so the
+         next studio-entry mount (or auth event) retries instead of getting stuck. */
     } finally {
       arm();
     }
@@ -330,11 +512,32 @@ export function createStudioSync(deps: StudioSyncDeps): StudioSync {
     return unsub;
   }
 
+  /** DRY RUN the scheduled[] → classes conversion — no store write, no PUT. Pass a
+   *  raw blob to inspect it directly (R5's "against a real account" valve); omit it
+   *  to dry-run against whatever is currently loaded locally. */
+  function dryRunMigration(blob?: RawStudioConfigBlob): ClassMigrationResult {
+    const scheduled = blob
+      ? Array.isArray(blob.scheduled)
+        ? (blob.scheduled as ScheduledStream[])
+        : []
+      : scheduling.getState().scheduled as ScheduledStream[];
+    const existingClasses = blob
+      ? Array.isArray(blob.classes)
+        ? (blob.classes as LiveClass[])
+        : []
+      : classes.getState().classes;
+    return migrateScheduledToClasses(scheduled, existingClasses, idGen).result;
+  }
+
   return {
     snapshotBlob,
     loadStudioForCurrentUser,
     resetStudioOnLogout,
     initStudioSync,
     flushNow,
+    get lastMigration() {
+      return lastMigrationResult;
+    },
+    dryRunMigration,
   };
 }

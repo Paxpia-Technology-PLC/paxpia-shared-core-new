@@ -296,7 +296,9 @@ export interface LiveSceneItem {
   id: string;
   // Mirrors @paxpia/core LayoutItemType (kept inline to avoid a layout-barrel import
   // cycle); 'whiteboard' is a first-class positionable scene source (see layout/types).
-  type: 'camera' | 'screen' | 'overlay' | 'doc' | 'whiteboard';
+  // 'slide' (a reusable SlideAsset) rides the SAME doc pipeline as 'doc' — see
+  // `buildRenderedScene`'s slide→doc slot-type remap in streaming/scene.ts.
+  type: 'camera' | 'screen' | 'overlay' | 'doc' | 'whiteboard' | 'slide';
   rect: { x: number; y: number; w: number; h: number };
   z: number;
   fit: 'contain' | 'cover';

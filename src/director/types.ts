@@ -417,6 +417,12 @@ export interface DirectorSession {
   /** LIVE serve a material (doc) to a slot in the CURRENT scene. Returns the served
    *  slot id, or null on a NO-OP. */
   serveMaterialToSlot(material: DirectorMaterial, itemId?: string): Promise<string | null>;
+  /** LIVE serve an ALREADY-BUILT doc payload (a written book's current chapter —
+   *  see `@paxpia/core/books`) to a slot in the CURRENT scene. Unlike
+   *  `serveMaterialToSlot`, there is no grant to await: the caller resolved the
+   *  payload itself and just needs it placed. Returns the served slot id, or null
+   *  on a NO-OP (no matching doc slot in this scene). */
+  serveDocPayloadToSlot(payload: DocPayload, itemId?: string): string | null;
 }
 
 // Re-export the scheduling/scenes payload types the deps reference, so a platform

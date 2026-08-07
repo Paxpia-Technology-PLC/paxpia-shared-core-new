@@ -136,9 +136,14 @@ export function buildRenderedScene(
   if (!scene) return { sceneId: null, nonce, overlays: [] };
   const overlays: SceneOverlay[] = [];
   for (const it of scene.items) {
-    if (it.type !== 'doc' && it.type !== 'overlay' && it.type !== 'whiteboard') continue;
-    const inst = fillFor(it.id, it.type) ?? null;
-    overlays.push({ itemId: it.id, type: it.type, rect: it.rect, z: it.z, instance: inst });
+    if (it.type !== 'doc' && it.type !== 'overlay' && it.type !== 'whiteboard' && it.type !== 'slide') continue;
+    // A `slide` item is filled + rendered through the SAME `doc` pipeline (it steps
+    // through its ordered materials, each served as a normal doc fill) — remap its
+    // slot type to 'doc' here so every downstream consumer (which keys off
+    // `SceneOverlay.type`, not the raw LayoutItemType) needs no changes of its own.
+    const slotType: SceneSlotType = it.type === 'slide' ? 'doc' : it.type;
+    const inst = fillFor(it.id, slotType) ?? null;
+    overlays.push({ itemId: it.id, type: slotType, rect: it.rect, z: it.z, instance: inst });
   }
   overlays.sort((a, b) => a.z - b.z);
   return { sceneId: scene.id, nonce, overlays };

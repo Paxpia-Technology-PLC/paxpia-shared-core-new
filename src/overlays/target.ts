@@ -183,8 +183,11 @@ export function sceneSlots<P>(
   const scene = all[sceneId] ?? {};
   const out: OverlaySlot[] = [];
   for (const it of items) {
-    if (it.type !== 'doc' && it.type !== 'overlay') continue;
-    out.push({ id: it.id, type: it.type, filled: it.id in scene, z: it.z });
+    if (it.type !== 'doc' && it.type !== 'overlay' && it.type !== 'slide') continue;
+    // A `slide` item is a doc-family slot (it steps through its ordered materials via
+    // the SAME serveMaterialToSlot path a plain doc uses) — remap it to 'doc' so the
+    // resolver + `serveMaterialToSlot`'s explicit-itemId lookup treat it identically.
+    out.push({ id: it.id, type: it.type === 'slide' ? 'doc' : it.type, filled: it.id in scene, z: it.z });
   }
   return out;
 }

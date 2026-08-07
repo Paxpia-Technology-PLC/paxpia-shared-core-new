@@ -77,8 +77,14 @@ export { getStudioConfig, putStudioConfig } from './config';
 export type {
   StoreHandle,
   StudioSchedulingState,
+  StudioSlidesState,
   AuthHandle,
   StudioSyncDeps,
   StudioSync,
+  ClassMigrationResult,
 } from './sync';
 export { createStudioSync, STUDIO_BLOB_VERSION, SAVE_DEBOUNCE_MS } from './sync';
+
+// ── Classes model (re-exported at root — `@paxpia/core` — for `studioSync.ts`
+// platform bindings; the full API lives at the narrow `@paxpia/core/classes`) ──
+export type { ClassesState } from '../classes/types';

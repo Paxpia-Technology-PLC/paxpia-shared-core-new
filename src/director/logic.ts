@@ -189,7 +189,10 @@ export function deriveSceneItems(
 ): DeriveSceneItem[] {
   const sceneDocs = servedDocs[scene.id] ?? {};
   return scene.items.map((it): DeriveSceneItem => {
-    if (it.type === 'doc') {
+    // A 'slide' item is a doc-family slot (steps through its ordered materials via
+    // the same serveMaterialToSlot fills) — treat it identically to 'doc' here so a
+    // pre-join viewer's prep manifest lists its current material like any other doc.
+    if (it.type === 'doc' || it.type === 'slide') {
       const inst = sceneDocs[it.id];
       if (!inst) return { type: 'doc' };
       const p = inst.payload as DocPayload;

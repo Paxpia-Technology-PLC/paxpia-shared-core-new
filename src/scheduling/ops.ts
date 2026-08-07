@@ -159,6 +159,21 @@ export function addOverlayItem(
   ]);
 }
 
+/** Append a reference to a saved Slide (by id) to the class's timeline. DEDUPED,
+ *  like `addMaterialItem`: the SAME slide can appear at most once per class. */
+export function addSlideItem(
+  streams: ScheduledStream[],
+  idGen: IdGen,
+  streamId: string,
+  slideId: string,
+): ScheduledStream[] {
+  return mapItems(streams, streamId, (items) =>
+    items.some((it) => it.kind === 'slide' && it.slideId === slideId)
+      ? items // already on this class's timeline → no duplicate
+      : [...items, { id: idGen(), kind: 'slide', order: items.length, done: null, slideId }],
+  );
+}
+
 /** Remove a timeline item by id. */
 export function removeItem(streams: ScheduledStream[], streamId: string, itemId: string): ScheduledStream[] {
   return mapItems(streams, streamId, (items) => items.filter((it) => it.id !== itemId));

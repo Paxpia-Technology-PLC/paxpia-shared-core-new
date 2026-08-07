@@ -877,6 +877,25 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
     return targetId;
   }
 
+  /** Serve an already-built doc payload (a book's current chapter) directly into
+   *  a slot — no grant to await, unlike `serveMaterialToSlot`. Works in both
+   *  preview and live, same as the material path. */
+  function serveDocPayloadToSlot(payload: DocPayload, itemId?: string): string | null {
+    const { sceneId, slots } = sceneSlotsNow(state.servedDocs);
+    const targetId = resolveDocServeTarget(slots, itemId);
+    if (!targetId) return null; // no empty doc slot in this scene → NO-OP
+
+    const inst = buildInstance({ id: `srv_${targetId}`, kind: 'doc', title: payload.title, payload }, (gen += 1));
+    set((s) => ({
+      servedDocs: { ...s.servedDocs, [sceneId]: { ...(s.servedDocs[sceneId] ?? {}), [targetId]: inst } },
+      activeDoc: inst,
+      docPresenter: { page: payload.page, zoom: 1, panX: 0, panY: 0 },
+    }));
+    broadcastLiveSync();
+    broadcastScene();
+    return targetId;
+  }
+
   return {
     getState,
     subscribe,
@@ -899,5 +918,6 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
     publishManifest,
     serveOverlayToSlot,
     serveMaterialToSlot,
+    serveDocPayloadToSlot,
   };
 }

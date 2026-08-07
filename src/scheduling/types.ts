@@ -59,7 +59,19 @@ export interface TimelineOverlayItem {
   };
 }
 
-export type TimelineItem = TimelineMaterialItem | TimelineOverlayItem;
+/** A reusable Slide (an ordered stack of materials, authored once in the Slide
+ *  Editor) referenced by id — a Slide is NOT copied into the timeline the way a
+ *  material is; it's a pointer into the slides library (`@paxpia/core/slides`),
+ *  so editing the Slide later is reflected wherever it's scheduled. */
+export interface TimelineSlideItem {
+  id: string;
+  kind: 'slide';
+  order: number;
+  done: DoneFlag;
+  slideId: string;
+}
+
+export type TimelineItem = TimelineMaterialItem | TimelineOverlayItem | TimelineSlideItem;
 
 /** The authored overlay blob carried by a {@link TimelineOverlayItem}. */
 export type TimelineOverlay = TimelineOverlayItem['overlay'];

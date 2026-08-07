@@ -37,12 +37,16 @@
  *  - camera     : a getUserMedia / LiveKit camera track (live video)
  *  - screen     : a getDisplayMedia / LiveKit screen-share track
  *  - overlay    : an interactive overlay widget (poll / quiz / vote-button / etc.)
- *  - doc        : a synced paged document (slides / PDF / worksheet)
+ *  - doc        : a synced paged document (a single picked material)
  *  - whiteboard : a synced, takeover-capable freehand board (the shared
  *                 `WhiteboardOverlay`, WebView-rendered) — a first-class POSITIONABLE
  *                 scene source like `doc`, so a board composes inside a multi-source
- *                 9:16 scene (camera + whiteboard + …) rather than being full-frame only. */
-export type LayoutItemType = 'camera' | 'screen' | 'overlay' | 'doc' | 'whiteboard';
+ *                 9:16 scene (camera + whiteboard + …) rather than being full-frame only.
+ *  - slide      : a reusable `SlideAsset` (an ordered stack of materials), referenced
+ *                 by id via `ref`. Renders through the SAME `doc` overlay pipeline as
+ *                 `doc` (the operator steps through the slide's materials, each one
+ *                 served as a normal doc fill) — see `@paxpia/core/slides`. */
+export type LayoutItemType = 'camera' | 'screen' | 'overlay' | 'doc' | 'whiteboard' | 'slide';
 
 /** How the source content fits its (normalized) box:
  *  - contain: scale to fit ENTIRELY inside the box — letterbox bars, NO crop.

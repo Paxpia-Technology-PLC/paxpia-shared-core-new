@@ -16,12 +16,17 @@
     "./layout": "./src/layout/index.ts",
     "./materials": "./src/materials/index.ts",
     "./scheduling": "./src/scheduling/index.ts",
+    "./slides": "./src/slides/index.ts",
     "./compositor": "./src/compositor/index.ts",
     "./director": "./src/director/index.ts",
     "./teaching": "./src/teaching/index.ts",
     "./messaging": "./src/messaging/index.ts",
     "./search": "./src/search/index.ts",
-    "./feed": "./src/feed/index.ts"
+    "./feed": "./src/feed/index.ts",
+    "./calling": "./src/calling/index.ts",
+    "./classes": "./src/classes/index.ts",
+    "./stage": "./src/stage/index.ts",
+    "./books": "./src/books/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

@@ -19,6 +19,7 @@
 // manifest and returns a descriptor. The leaf renderer reads `kind` and draws.
 
 import type { DocPayload, OverlayInstance } from '../overlays/types';
+import type { BookPage } from '../books/types';
 import { isPdfEntry, isEpubEntry, isImageEntry } from './preload';
 import { manifestEntry } from './viewer';
 import type { LiveManifest } from './live';
@@ -36,8 +37,11 @@ import type { LiveManifest } from './live';
  *   'placeholder' — no usable source yet (a non-URL placeholder page before any
  *                   render pipeline, e.g. a same-machine dev push). Draw the
  *                   labelled card; never a video player.
+ *   'book'        — a written book's current chapter (`@paxpia/core/books`). No
+ *                   file, no url — `book` on the plan carries the chapter prose
+ *                   directly. Renders as scrolling TEXT, no pan/zoom.
  *   'empty'       — no pages at all. */
-export type DocRenderKind = 'image' | 'pdf' | 'epub' | 'placeholder' | 'empty';
+export type DocRenderKind = 'image' | 'pdf' | 'epub' | 'placeholder' | 'book' | 'empty';
 
 /** The descriptor the leaf renderer executes. `pageCount`/`page` are resolved +
  *  clamped here so neither platform re-derives them (the web off-by-one on an
@@ -45,7 +49,7 @@ export type DocRenderKind = 'image' | 'pdf' | 'epub' | 'placeholder' | 'empty';
 export interface DocRenderPlan {
   kind: DocRenderKind;
   /** The source for the current page: an image URL ('image'), a raw PDF URL
-   *  ('pdf'), or undefined ('placeholder'/'empty'). */
+   *  ('pdf'), or undefined ('placeholder'/'empty'/'book'). */
   src?: string;
   /** Clamped current page index (0-based). */
   page: number;
@@ -54,6 +58,9 @@ export interface DocRenderPlan {
   pageCount: number;
   /** The doc's title (caption/strip extension done upstream). */
   title: string;
+  /** Present only when `kind === 'book'` — the chapter the shared `BookPageView`
+   *  renders (see `@paxpia/ui/book`). */
+  book?: BookPage;
 }
 
 /** True if a string looks like a directly-fetchable URL (http(s) or a local
@@ -82,6 +89,22 @@ export function resolveDocRender(
   manifest: LiveManifest | null,
 ): DocRenderPlan {
   const payload = overlay.payload;
+
+  // 0. A written book's current chapter. Checked FIRST: a book has no file, no
+  // `pages`, no `sourceUrl` — every branch below would land on 'empty' otherwise.
+  // Pagination rides the payload's own generic `page`; the shared chrome shows a
+  // single page (the REAL chapter nav is the host's own control — see
+  // `Paxpia-mobile/src/live/session/useBookPane.ts` — not this shell's chrome).
+  if (payload.book) {
+    return {
+      kind: 'book',
+      page: payload.page ?? 0,
+      pageCount: 1,
+      title: payload.book.title,
+      book: payload.book,
+    };
+  }
+
   const pages = payload.pages ?? [];
   const title = payload.title ?? '';
   const entry = manifestEntry(manifest, overlay.id);

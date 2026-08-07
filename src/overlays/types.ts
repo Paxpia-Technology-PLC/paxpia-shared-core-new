@@ -4,6 +4,11 @@
 // platform; the data + lifecycle are shared so web and mobile behave identically
 // and a stream can cycle between overlay types over time.
 
+// Type-only: `books/types.ts` has no reverse dependency on this file, so this
+// does not create a real module cycle (only `books/payload.ts` imports `DocPayload`,
+// one-directionally, to CONSTRUCT one).
+import type { BookPage } from '../books/types';
+
 export type OverlayKind =
   | 'svg' // freehand illustration / whiteboard strokes
   | 'poll' // multi-option poll
@@ -66,6 +71,12 @@ export interface DocPayload {
    *  pages[] (reflowable, never rasterized), so with no manifest AND no mime hint the
    *  plan would fall to 'empty'. Live rooms still derive the kind from the manifest. */
   sourceMime?: string;
+  /** A written book's current chapter (see `@paxpia/core/books`). Present ⇒
+   *  `resolveDocRender` returns kind 'book' before any other branch — a book has
+   *  no file, no `pages`, no `sourceUrl`, so every other branch would otherwise
+   *  land on 'empty'. Pagination (which chapter, how many) rides `page` above;
+   *  this is just the one chapter's content. */
+  book?: BookPage;
 }
 
 /** A live whiteboard. Strokes do NOT live here (they stream as deltas, like doc

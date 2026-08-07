@@ -519,6 +519,11 @@ export * from './layout';
 // seam (MaterialsClient), so web + mobile derive fresh presigned URLs from one
 // source. The platform binds its fetch + auth token + render (pdf.js / RN).
 export * from './materials';
+// SLIDES: a reusable presentation asset — an ordered stack of materials a creator
+// authors once and attaches to any scene by reference (SlideAsset/upsertSlide/
+// removeSlide/touchSlideUsage). Composes MaterialMeta; no new render/sync model —
+// live playback reuses the `doc` overlay pipeline (see `layout` LayoutItemType).
+export * from './slides';
 // COMPOSITOR SEAM (§1.4): the platform-agnostic `Compositor` interface (+ its
 // factory/config + opaque media-handle aliases) the producer brain (§2.1) binds a
 // per-platform compositor through — like `OverlayTransport`/`LeafAdapter`. Named
@@ -661,3 +666,12 @@ export * from './search';
 // The rn-web video grid + watch feed live in @paxpia/ui/feed. Full path also reachable
 // via `@paxpia/core/feed`.
 export * from './feed';
+// CALLING (2026-07-07): the PURE 1:1 / group call STATE MACHINE — phase reducer
+// (dialing/connecting/ringing/connected/ended), status copy, end-reason mapping, the
+// UUID-free peer-name resolver, and the `call_log` chip copy. The ONE brain both
+// CallScreens (mobile RTCView + web <video>) drive so call status + teardown can't
+// diverge again (fixes stuck-"Ringing", kicked-to-list, ringing-an-offline-callee,
+// UUID-as-name). The media plane + video render + nav are injected per-platform. No
+// name clashes (CallLog/CallJoinInfo live in messaging; these are new symbols). Full
+// path also reachable via `@paxpia/core/calling`.
+export * from './calling';

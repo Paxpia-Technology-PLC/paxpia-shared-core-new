@@ -18,6 +18,7 @@
 
 import type { Scene } from '../layout/types';
 import type { LastInteracted, SceneAssignments } from '../overlays/target';
+import type { LiveClass, ScheduledSession } from '../classes/types';
 
 // ── Random-id seam ───────────────────────────────────────────────────────────
 // Scenes/items/streams need stable opaque ids. The id generator is injectable so a
@@ -91,9 +92,20 @@ export interface StudioConfigBlob {
   /** Scheduling-store payload (opaque to this module). */
   scheduled: unknown[];
   activeStreamId: string | null;
+  /** Slides-library payload (opaque to this module — `SlideAsset[]` from
+   *  `@paxpia/core/slides`). Rides the same account blob so a Slide a tutor
+   *  authors is available across devices, exactly like scenes/schedules. */
+  slides: unknown[];
   /** Per-scene overlay→body slot fills + per-type last-interacted. */
   assignments: SceneAssignments<unknown>;
   lastInteracted: Record<string, LastInteracted>;
+  /** Durable classes + their scheduled sessions (v2 — see `@paxpia/core/classes`
+   *  and docs/GO-LIVE-REBUILD-PLAN.md §11). Rides the SAME account blob so a class
+   *  prepared on the phone is there on the web studio and vice-versa. Optional so
+   *  a v1 blob (pre-classes) still parses; `migrateBlob` fills it in. */
+  classes?: LiveClass[];
+  sessions?: ScheduledSession[];
+  activeClassId?: string | null;
 }
 
 /** A raw blob as it comes off the server/cache — every field optional/unknown so the
