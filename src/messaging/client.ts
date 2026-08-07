@@ -8,6 +8,8 @@
 import { timers, type TimerHandle } from './timers';
 import type { DeleteScope } from './permissions';
 import type {
+  CallJoinInfo,
+  CallLog,
   ClientFrame,
   ListMessagesResponse,
   ListThreadsResponse,
@@ -92,6 +94,23 @@ export interface MessagingApi {
   archiveThread?(threadId: string, value: boolean): Promise<void>;
   /** Leave a (group/channel) thread. */
   leaveThread?(threadId: string): Promise<void>;
+}
+
+/** The CALL control surface (`/api/v1/messaging/threads/{id}/calls` + `/calls/{id}/…`).
+ *  A **cross-platform contract**: every platform (mobile, web) provides a concrete
+ *  `CallApi` impl, and TypeScript fails the build if any method is missing — so a
+ *  platform can never silently ship an incomplete calling surface. The shared call
+ *  session logic is written against this interface, never a platform SDK. */
+export interface CallApi {
+  /** Start a call in a thread the caller belongs to → join info for the caller.
+   *  Rings the other participants over the messaging WS. */
+  initiateCall(threadId: string, kind: 'voice' | 'video'): Promise<CallJoinInfo>;
+  /** Answer a ringing call → join info for this participant. */
+  acceptCall(callId: string): Promise<CallJoinInfo>;
+  /** Reject a ringing call. */
+  declineCall(callId: string): Promise<CallLog>;
+  /** Hang up an in-progress (or still-ringing) call. Idempotent. */
+  endCall(callId: string): Promise<CallLog>;
 }
 
 /** Generate a send idempotency key (the server dedupes on `(sender_id, key)`, so a
@@ -294,9 +313,17 @@ export class MessagingSocket {
 }
 
 /** Build the messaging WS URL from an http(s) API base + a JWT. Shared so web +
- *  mobile derive the same `ws(s)://…/api/v1/messaging/ws?token=` endpoint. */
+ *  mobile derive the same `ws(s)://…/api/v1/messaging/ws?token=` endpoint.
+ *
+ *  The base is passed differently per platform: mobile hands a BARE host
+ *  (`http://host:port`), web hands the same-origin GATEWAY prefix
+ *  (`<origin>/api`). We must NOT double the `/api` segment — appending
+ *  `/api/v1/messaging/ws` to a base that already ends in `/api` produced the
+ *  `ws://…/api/api/v1/messaging/ws` dead socket (no presence / no call ring on
+ *  web). Detect the existing `/api` suffix and add only the missing part. */
 export function messagingWsUrl(httpBase: string, token?: string): string {
   const ws = httpBase.replace(/^http/i, 'ws').replace(/\/+$/, '');
   const q = token ? `?token=${encodeURIComponent(token)}` : '';
-  return `${ws}/api/v1/messaging/ws${q}`;
+  const path = /\/api$/i.test(ws) ? '/v1/messaging/ws' : '/api/v1/messaging/ws';
+  return `${ws}${path}${q}`;
 }

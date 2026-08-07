@@ -94,6 +94,19 @@ export interface CallLog {
   duration_ms?: number;
 }
 
+/** What a participant needs to JOIN a call's media room — returned by
+ *  InitiateCall / AcceptCall. Shared so web + mobile agree on the shape. Today the
+ *  media plane is a LiveKit call room (`sfu_room_id` + `sfu_token`); when the 1:1
+ *  tier moves to plain WebRTC P2P (per the sfu-livekit LOCK), this same envelope
+ *  carries the ICE config instead of an SFU token. `sfu_ws_url` is optional — the
+ *  client falls back to its configured LiveKit URL. */
+export interface CallJoinInfo {
+  call: CallLog;
+  sfu_room_id: string;
+  sfu_token: string;
+  sfu_ws_url?: string;
+}
+
 export interface ReactionSummary {
   reaction: string;
   count: number;
@@ -136,6 +149,7 @@ export interface Message {
 
 export interface Participant {
   user_id: string;
+  username?: string;
   display_name?: string;
   avatar_url?: string;
   joined_at_unix: number;
