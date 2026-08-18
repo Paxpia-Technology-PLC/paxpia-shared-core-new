@@ -18,6 +18,7 @@ export {
   paneSourceLabel,
   releaseCameraDrag,
   resetSplit,
+  setActivePane,
   setCameraRect,
   setCameraVisible,
   setPane,

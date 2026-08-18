@@ -72,10 +72,29 @@ export function clearAllPanes(stage: StageSpec): StageSpec {
 /** Put content in the first sensible pane: the first EMPTY slot, or — when both
  *  are occupied — the LOWER pane (`pane_b`), so what's being taught from (the
  *  top pane) stays put. Returns the slot it went to so the caller can serve the
- *  content to the right item id. */
+ *  content to the right item id.
+ *
+ *  Kept for a genuine deliberate two-pane arrangement (nothing currently calls it —
+ *  see `setActivePane` below for the default "tap to show X" verb), rather than
+ *  removed outright: the pane/split/swap machinery this feeds is real infrastructure,
+ *  not dead code, and a future "put this beside what's on stage" action can still
+ *  reach for it without re-deriving the empty-then-lower-pane placement rule. */
 export function addToStage(stage: StageSpec, source: PaneSource): { stage: StageSpec; slot: PaneSlotId } {
   const target = !hasContent(stage.panes.pane_a) ? 'pane_a' : !hasContent(stage.panes.pane_b) ? 'pane_b' : 'pane_b';
   return { stage: setPane(stage, target, source), slot: target };
+}
+
+/** Replace whatever is currently on screen with ONE new source — the default "tap to
+ *  show X" behavior most online-teaching tools use (Zoom, Google Classroom): sharing
+ *  something new always REPLACES the current share, it never stacks alongside it.
+ *
+ *  Always lands in `pane_a` and clears `pane_b`, so a lingering second pane from an
+ *  earlier explicit two-pane arrangement can't leave an old document sitting behind
+ *  the new one. Returns the slot ('pane_a') so callers can still serve content to it,
+ *  same contract as `addToStage`. */
+export function setActivePane(stage: StageSpec, source: PaneSource): { stage: StageSpec; slot: PaneSlotId } {
+  const cleared = clearPane(stage, 'pane_b');
+  return { stage: setPane(cleared, 'pane_a', source), slot: 'pane_a' };
 }
 
 // ── split + swap + fullscreen ─────────────────────────────────────────────────
@@ -141,16 +160,22 @@ export function moveCameraBy(stage: StageSpec, dx: number, dy: number): StageSpe
   return setCameraRect(stage, { ...rect, x: rect.x + dx, y: rect.y + dy });
 }
 
-/** Snap the bubble to its nearest corner after a drag ends — the D6 "corner
- *  snapping" behaviour. A no-op reducer otherwise (the drag itself already
- *  committed the live position via `setCameraRect`/`moveCameraBy`). */
+/** End of a camera-bubble drag. The bubble KEEPS wherever it was dragged to:
+ *  the drag itself already committed the live position via
+ *  `setCameraRect`/`moveCameraBy`, and `clampCameraRect` guarantees it is still
+ *  fully on-screen, so there is nothing left to do.
+ *
+ *  This used to SNAP to the nearest corner (the old D6 behaviour), which meant a
+ *  floating preview could only ever rest in one of four spots — a host who moved
+ *  it to the middle-right to clear a diagram watched it jump back to a corner and
+ *  cover the thing they were pointing at. A PiP overlay is expected to stay where
+ *  it was put, so the snap is gone; free positioning is the behaviour now.
+ *
+ *  Kept as a reducer (rather than deleted) so callers keep a single "drag ended"
+ *  seam to call — sessionStore's identity-stable `stageAction` relies on getting
+ *  the SAME object back for a no-op, which is exactly what this returns. */
 export function releaseCameraDrag(stage: StageSpec): StageSpec {
-  const { rect } = stage.camera;
-  const cx = rect.x + rect.w / 2;
-  const cy = rect.y + rect.h / 2;
-  const nearestX = cx < 0.5 ? 0.03 : 1 - rect.w - 0.03;
-  const nearestY = cy < 0.5 ? 0.03 : 1 - rect.h - 0.03;
-  return setCameraRect(stage, { ...rect, x: nearestX, y: nearestY });
+  return stage;
 }
 
 // ── derived geometry (the SAME functions the compiled scene used) ────────────

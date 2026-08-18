@@ -175,6 +175,17 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
   // Guards against re-entrant recovery (a track-lost event firing while we're already
   // re-provisioning + republishing).
   let recoveringVideo = false;
+  // Guards against re-entrant endLive(). The mobile "End class" flow fires endLive() and
+  // navigates away in the SAME tick; the navigation unmounts LiveSessionScreen, whose own
+  // unmount safety net (useEndLiveOnUnmount) ALSO calls endLive() if the session was live —
+  // a second concurrent call landing before the first's trailing `set()` clears `room`/
+  // `roomName` re-reads the SAME roomName (room is nulled synchronously, but roomName isn't,
+  // until after the awaited media.closeRoom below), so it fires a SECOND, redundant
+  // `media.closeRoom(null, roomName)` — a duplicate endRoom() network call racing the first.
+  // Neither call ever throws (closeRoom is best-effort/caught), so this never crashed
+  // outright; it just left a second unresolved teardown in flight, which is what read as
+  // the app "freezing" after ending a session.
+  let endingLive = false;
   let disableAggregator: (() => void) | null = null;
   // In-memory preload cache for the running class's materials (id → rendered doc).
   let preloadCache: DirectorPreloadCache = deps.newPreloadCache();
@@ -544,6 +555,18 @@ export function createDirectorSession(deps: DirectorDeps): DirectorSession {
   }
 
   async function endLive(): Promise<void> {
+    // Idempotent: a session that's already idle, or already mid-teardown from the FIRST
+    // endLive() call, has nothing further to do — see the `endingLive` comment above.
+    if (state.status === 'idle' || endingLive) return;
+    endingLive = true;
+    try {
+      await endLiveOnce();
+    } finally {
+      endingLive = false;
+    }
+  }
+
+  async function endLiveOnce(): Promise<void> {
     const roomName = state.roomName;
     // Tell viewers to wipe BOTH slots before we drop the channel.
     if (channel) {
