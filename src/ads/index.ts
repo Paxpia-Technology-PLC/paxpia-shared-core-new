@@ -482,3 +482,24 @@ export function safeBrandColor(
 
   return { background: toHex(cur), label: toHex(labelColor) };
 }
+
+// --- Stopgap for local website imports ---
+export type AdAttributionSetting =
+  | '1d_view_7d_click'
+  | '1d_view_1d_click'
+  | '7d_click'
+  | '1d_click';
+
+const DAY_SECS = 24 * 60 * 60;
+
+export const ATTRIBUTION_TTL_SECS: Record<AdAttributionSetting, number> = {
+  '1d_view_7d_click': 7 * DAY_SECS,
+  '1d_view_1d_click': 1 * DAY_SECS,
+  '7d_click': 7 * DAY_SECS,
+  '1d_click': 1 * DAY_SECS,
+};
+
+export type ResolvedAdCta = NonNullable<ReturnType<typeof resolveAdCta>>;
+export type AdMedia = any;
+export type WeaveCadence = any;
+export type AdObjective = any;

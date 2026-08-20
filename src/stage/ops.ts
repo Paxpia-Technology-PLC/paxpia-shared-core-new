@@ -264,6 +264,11 @@ function paneItemType(source: PaneSource): LayoutItemType {
 /** Compile the current stage into the ONE live scene. Pure — `sceneId` is the
  *  caller's constant scene id (so served content survives every recompile);
  *  `name` defaults to a neutral label since a session never authors one. */
+/** The camera item's id in a compiled `Scene`. Named once so `compileStage` and
+ *  `cameraItemId()` cannot drift apart — a stream looked up under a stale id
+ *  silently resolves to nothing. */
+const CAMERA_ITEM_ID = 'cam_pip';
+
 export function compileStage(stage: StageSpec, sceneId: string, name = 'Live'): Scene {
   const items: LayoutItem[] = [];
   const rects = paneRects(stage);
@@ -285,7 +290,7 @@ export function compileStage(stage: StageSpec, sceneId: string, name = 'Live'): 
   const cam = cameraRect(stage);
   if (cam) {
     items.push({
-      id: 'cam_pip',
+      id: CAMERA_ITEM_ID,
       type: 'camera',
       rect: cam,
       // Floating PiP draws over the panes; when it's the full-frame talking-head
@@ -296,4 +301,41 @@ export function compileStage(stage: StageSpec, sceneId: string, name = 'Live'): 
   }
 
   return { id: sceneId, name, items };
+}
+
+// ─── Derived helpers used by the session UI ─────────────────────────────────────────
+
+/** The camera's item id in a compiled `Scene`.
+ *
+ *  A FUNCTION, not a bare constant, because that is how the caller uses it
+ *  (`useStream(cameraItemId())`) — and because the id belongs to the compiler, not
+ *  to the caller. It must stay in step with the `id` `compileStage` assigns the
+ *  camera item above; a stream looked up under any other id resolves to nothing
+ *  and the bubble renders empty. */
+export function cameraItemId(): string {
+  return CAMERA_ITEM_ID;
+}
+
+/** Slots that currently hold something.
+ *
+ *  Delegates to `visiblePanes` rather than re-filtering: one definition of "this
+ *  pane has content" means the camera cannot decide it is a bubble while the
+ *  layout decides there is nothing to sit beside. */
+export function filledPanes(stage: StageSpec): PaneSlotId[] {
+  return visiblePanes(stage);
+}
+
+/** Which corner the camera bubble currently sits nearest, by its CENTRE.
+ *
+ *  Centre, not origin: judging by the top-left makes a bubble that visually fills
+ *  the bottom-right report 'top-left' as soon as its origin crosses the midpoint.
+ *  Consumed as a presentation hint (a `data-corner` attribute), so it never moves
+ *  the camera — `setCameraRect` / `moveCameraBy` remain the only things that do. */
+export function nearestCorner(rect: Rect): 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' {
+  const cx = rect.x + rect.w / 2;
+  const cy = rect.y + rect.h / 2;
+  const vertical = cy < 0.5 ? 'top' : 'bottom';
+  const horizontal = cx < 0.5 ? 'left' : 'right';
+  return `${vertical}-${horizontal}` as
+    'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
 }

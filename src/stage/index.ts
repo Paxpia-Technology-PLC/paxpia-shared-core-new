@@ -6,13 +6,16 @@ export { CAMERA_BUBBLE_H, CAMERA_BUBBLE_W, MAX_SPLIT, MIN_SPLIT, defaultCameraRe
 
 export {
   addToStage,
+  cameraItemId,
   cameraRect,
   clearAllPanes,
   clearPane,
   compileStage,
   exitFullscreen,
+  filledPanes,
   initialStage,
   moveCameraBy,
+  nearestCorner,
   paneRects,
   paneSourceForKitItem,
   paneSourceLabel,
