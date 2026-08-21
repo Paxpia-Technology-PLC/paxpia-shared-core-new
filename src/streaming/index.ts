@@ -66,6 +66,8 @@ export * from './docTakeover';
 // half of the "PC manager closed" fix — pairs with join.ts (connect decision) +
 // entry.ts (manifest gate). Web + RN classify the same set of strings.
 export * from './connection';
+// Background/foreground policy for a live session (host keeps broadcasting).
+export * from './background';
 // PUBLIC streamer identity (username/displayName/avatar) for live-room + feed
 // tiles, and the shared CDN-snippet PREVIEW state machine (refresh/back-off/
 // in-flight). Web + RN render layers are thin shells over these.

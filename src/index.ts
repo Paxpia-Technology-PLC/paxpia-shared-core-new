@@ -389,6 +389,11 @@ export {
   trackRecoveryPhase,
   nextTrackRecoveryAction,
 } from './streaming/connection';
+// BACKGROUND POLICY — what a live session does when the app leaves the foreground.
+// A host KEEPS BROADCASTING (Android behind the foreground service; iOS keeps the room
+// + mic and suspends video, because iOS stops AVCaptureSession in the background).
+export type { BackgroundAction, BackgroundInput } from './streaming/background';
+export { backgroundPolicy, needsVideoResume } from './streaming/background';
 // Shared CDN-snippet PREVIEW state machine (single stable url, refresh cadence,
 // exponential back-off, one-load-in-flight). Web + mobile share this brain.
 export type { PreviewConfig, PreviewAction, PreviewSnapshot } from './streaming/preview';
