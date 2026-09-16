@@ -18,7 +18,16 @@ export type OverlayKind =
   | 'gift' // gift toast feed
   | 'whiteboard'; // synced, takeover-capable freehand board (WebView-rendered, like doc)
 
-export type OverlayPhase = 'idle' | 'active' | 'closed';
+/** The lifecycle states an overlay instance can hold.
+ *
+ * `draft` and `revealed` were added so the phase vocabulary covers the control
+ * verbs that produce them (`create` → draft, `reveal` → revealed). They were
+ * previously expressible ONLY on `OverlayResultsMsg.phase`, which widened the
+ * union inline — so the bot could report a phase that no `OverlayInstance` was
+ * able to store, and the two halves of the same lifecycle disagreed by design.
+ *
+ * Order is lifecycle order: idle → draft → active → closed → revealed. */
+export type OverlayPhase = 'idle' | 'draft' | 'active' | 'closed' | 'revealed';
 
 /** A live overlay instance on a stream. `gen` (generation) bumps on every reset
  *  so a new round re-opens participation; `payload` is kind-specific. */

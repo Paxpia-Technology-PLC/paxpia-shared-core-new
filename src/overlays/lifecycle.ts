@@ -22,15 +22,26 @@ export function userChoice(
   return userStates.find((s) => s.overlayId === overlay.id && s.gen === overlay.gen)?.choice;
 }
 
-/** Record a user's choice for the current round (idempotent — re-acting in the
- *  same round is ignored; the first commit stands). Returns the new state list. */
+/** Record a user's choice for the current round. ONE row per (overlay, gen), and
+ *  LAST-CHOICE-WINS: re-acting in the same round MOVES the vote to the new choice
+ *  rather than being ignored. Returns the new state list.
+ *
+ *  This used to return early on `hasActed`, i.e. vote-once — the one behavioural
+ *  home of the same contradiction `OverlayResponseMsg` documented (see wire.ts).
+ *  The filter below already replaced the round's row, so dropping the early return
+ *  is the whole change. PROVISIONAL pending services/overlays confirmation.
+ *
+ *  NOTE: this helper, `hasActed` and `userChoice` currently have NO callers and no
+ *  tests anywhere in the workspace — the live participation path runs through
+ *  `overlays/kinds/participation.ts` and the bot's own tally instead. They are kept
+ *  correct so they cannot mislead as a reference, but they are retirement
+ *  candidates in the lane migration, not load-bearing code. */
 export function commitChoice(
   overlay: Pick<OverlayInstance, 'id' | 'gen'>,
   userStates: UserOverlayState[],
   choice: string,
   nowUnix: number,
 ): UserOverlayState[] {
-  if (hasActed(overlay, userStates)) return userStates;
   return [
     ...userStates.filter((s) => !(s.overlayId === overlay.id && s.gen === overlay.gen)),
     { overlayId: overlay.id, gen: overlay.gen, choice, actedAtUnix: nowUnix },

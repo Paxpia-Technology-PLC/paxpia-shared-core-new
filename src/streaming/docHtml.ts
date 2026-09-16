@@ -35,6 +35,7 @@
 // mobile WebView) owns the wiring; this only describes the document.
 
 import type { DocViewMode } from './live';
+import { FIT_SCALE_TO_FRAME_JS, FIT_SCALE_TO_FRAME_FN } from './docScale';
 import type { WbStroke } from '../overlays/whiteboard';
 
 /** The pinned doc-engine builds. ONE version everywhere (was pdfjs 4.10 web / 3.11
@@ -224,8 +225,20 @@ export function frameHead(mode: DocViewMode, transparent = false): string {
     // #stage = the fixed viewport (single mode). #content = the transformed layer. Both are
     // explicitly transparent for an annotation board so nothing opaque sits over the doc.
     '#stage{position:' + (scrolled ? 'static' : 'fixed') + ';inset:0;overflow:hidden;background:transparent;}' +
-    '#content{transform-origin:center center;will-change:transform;width:100%;' + (scrolled ? '' : 'height:100%;') + 'background:transparent;}' +
-    '.pg{display:block;width:100%;margin:0 auto ' + (scrolled ? '8px' : '0') + ';background:' + pageBg + ';}' +
+    // SINGLE mode also CENTRES the page in the viewport. `.pg` is width-fitted with
+    // its natural height, so a page shorter than the frame used to leave all of its
+    // slack BELOW it — a 16:9 slide or a portrait cover on a tall phone rendered as a
+    // band jammed against the top of the stage, which reads as the material being
+    // collapsed rather than presented.
+    //
+    // `margin:auto` inside a flex column rather than `justify-content:center`: auto
+    // margins absorb only FREE space, so they resolve to 0 the moment the page is
+    // taller than the stage. A tall page is therefore laid out exactly as before and
+    // nothing is clipped off the top — which is what makes this safe for the web
+    // frame, where a page usually already fills the height and this is a no-op.
+    // SCROLL mode is untouched: it must run past the viewport and start at the top.
+    '#content{transform-origin:center center;will-change:transform;width:100%;' + (scrolled ? '' : 'height:100%;display:flex;flex-direction:column;') + 'background:transparent;}' +
+    '.pg{display:block;width:100%;margin:' + (scrolled ? '0 auto 8px' : 'auto') + ';background:' + pageBg + ';}' +
     '#e{position:fixed;inset:0;display:none;align-items:center;justify-content:center;color:#9aa;font:13px sans-serif;padding:16px;text-align:center;}' +
     '</style></head><body>'
   );
@@ -347,10 +360,30 @@ function buildPdfHtml(o: BuildDocHtmlOptions): string {
     'var __pdf=null,__cur=' + page1 + ',__total=' + Math.max(0, o.pageCount ?? 0) + ';',
     'var dpr=window.devicePixelRatio||1;',
     'function vwidth(){return document.documentElement.clientWidth||window.innerWidth||320;}',
-    // render page n (1-based) into a canvas at fit-width * dpr (crisp).
+    'function vheight(){return document.documentElement.clientHeight||window.innerHeight||480;}',
+    // The ONE single-page fit scale, shared with every other renderer that presents a
+    // page whole (streaming/docScale.ts). Injected as source because this is a string
+    // builder; a unit test evaluates it against the TS function so the two cannot drift.
+    FIT_SCALE_TO_FRAME_JS,
+    // render page n (1-based) into a canvas at dpr (crisp).
+    //  SINGLE — ONE page presented whole, so it fits BOTH axes. Fitting on width alone
+    //    left the backing store `vwidth()*dpr*(h/w)` tall with nothing bounding the
+    //    right-hand side, so a page whose aspect ratio no frame implies (an A0 poster, a
+    //    stitched scan) rasterized past the platform's canvas ceiling — a silently blank
+    //    pane, or an OOM-killed renderer, mid-lesson.
+    //  SCROLL — pages stack in a scroller, so fit-WIDTH is correct and deliberate:
+    //    binding height here would shrink an ordinary A4 until the whole document fitted
+    //    on screen, leaving nothing to scroll. Scroll mode's own unbounded growth (it
+    //    never releases a rasterized canvas) is a separate defect, tracked separately.
     'function renderOne(n,canvas){return __pdf.getPage(n).then(function(pg){' +
-      'var base=pg.getViewport({scale:1});var scale=(vwidth()/base.width)*dpr;var vp=pg.getViewport({scale:scale});' +
+      'var base=pg.getViewport({scale:1});' +
+      'var scale=MODE==="single"?' + FIT_SCALE_TO_FRAME_FN + '(base,vwidth(),vheight(),dpr):(vwidth()/base.width)*dpr;' +
+      'var vp=pg.getViewport({scale:scale});' +
       'canvas.width=vp.width;canvas.height=vp.height;canvas.style.height=(vp.height/dpr)+"px";' +
+      // `.pg` is `width:100%`, which would stretch a height-bound page back across the
+      // frame and distort it. An INLINE width wins over the stylesheet and is a no-op for
+      // every page that still binds on width (the common case) — it equals 100% there.
+      'if(MODE==="single")canvas.style.width=(vp.width/dpr)+"px";' +
       'return pg.render({canvasContext:canvas.getContext("2d"),viewport:vp}).promise;});}',
     'function singleRender(n){var box=document.getElementById("pages");box.innerHTML="";' +
       'var c=document.createElement("canvas");c.className="pg";box.appendChild(c);' +

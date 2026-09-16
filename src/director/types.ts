@@ -29,7 +29,7 @@
 import type { DocPresenterState, DocViewMode, LiveManifest, LiveScene } from '../streaming/live';
 import type { DocAnnotationState } from '../overlays/annotation';
 import type { WhiteboardItemSettings } from './logic';
-import type { DocPayload, OverlayInstance } from '../overlays/types';
+import type { DocPayload, OverlayInstance, OverlayPhase } from '../overlays/types';
 import type { RenderedScene } from '../streaming/scene';
 import type { RoomManifest } from '../streaming/prep';
 import type { AuthoredKind, AuthoredPayload } from '../scheduling/types';
@@ -53,14 +53,38 @@ export type DirectorStatus = 'idle' | 'connecting' | 'live';
 // ── The producer signal-fanout transport (wraps the web OverlayChannel) ──────
 
 /** A live tally for the participation overlay slot, surfaced to the producer's
- *  results panel. The brain reads ONLY `overlayId`/`gen` (the results-gen adopt
- *  decision); the rest of the platform's results message (tallies/total/phase) rides
- *  along opaquely and is mirrored back to the platform store as-is. Kept to the
- *  minimal read shape so a platform's concrete results type (web `OverlayResultsMsg`)
- *  is structurally assignable without an index-signature mismatch. */
+ *  results panel.
+ *
+ *  ── WHY THIS CARRIES THE TALLY NOW ──────────────────────────────────────────
+ *  This used to declare ONLY `{ overlayId, gen }`, on the reasoning that the brain
+ *  reads nothing else and the real payload could "ride along opaquely". It could
+ *  not: an interface that omits the payload does not carry it, it ERASES it — so
+ *  every producer had to launder its message through `as unknown as
+ *  DirectorResultsMsg` to publish a tally at all, and both platforms did.
+ *
+ *  That cast is what let the two lanes silently disagree about the payload's own
+ *  field names. The web aggregator sends `counts`; every consumer — the shared
+ *  participation module's `applyRemote`, `overlaySessionLogic` — reads `tallies`.
+ *  The compiler could not object, because the type had deleted the field the
+ *  argument was about. The bars stayed at zero and nothing anywhere failed.
+ *
+ *  So the payload is declared. `tallies` is the canonical name (it matches
+ *  `OverlayResultsMsg` on the wire and every reader); `counts` is not an alias and
+ *  must not be reintroduced. `OverlayResultsMsg` stays structurally assignable to
+ *  this, which is what lets a platform hand its concrete wire message straight in
+ *  with no cast at all — the property this shape was supposed to have and didn't. */
 export interface DirectorResultsMsg {
   overlayId: string;
   gen: number;
+  /** choiceId → count. NOT `counts`. */
+  tallies: Record<string, number>;
+  /** Response count for the round. Under last-choice-wins this equals the number
+   *  of distinct voters AND the sum of `tallies` — they only diverge if a producer
+   *  lets one identity hold two rows, which the per-identity key forbids. */
+  total: number;
+  /** The round's lifecycle phase, so a results panel can tell a live tally from a
+   *  frozen one. Optional: the in-tab aggregator has no phase of its own to report. */
+  phase?: OverlayPhase;
 }
 
 /** The active-overlay echo the bot/aggregator surfaces back to the producer (the

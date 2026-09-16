@@ -62,8 +62,22 @@ export interface OverlayControlMsg {
 }
 
 /** VIEWER (or streamer) response to the active overlay — a vote/answer choice.
- *  Idempotent by (overlayId, gen, identity): re-sending the same or a different
- *  choice in the same generation does NOT change the committed vote (vote-once).
+ *
+ *  Keyed by (overlayId, gen, stable identity) — ONE row per identity per round, so
+ *  a response never adds a second vote for someone who already answered.
+ *
+ *  LAST-CHOICE-WINS on a re-vote: re-sending a DIFFERENT choice in the same
+ *  generation moves the vote (the new choice replaces the committed one; the total
+ *  is unchanged). Re-sending the SAME choice is a no-op.
+ *
+ *  This doc used to say the opposite — "does NOT change the committed vote
+ *  (vote-once)" — while `VoteSnapshot` below said last-choice-wins and
+ *  `foldOptimisticTally` implemented the move. Three statements of one rule, two of
+ *  them agreeing and one not; the vote-once reading was the stale one and is gone.
+ *  PROVISIONAL until services/overlays confirms the bot does the same — the client
+ *  now assumes the move, so a vote-once bot would disagree with every client's
+ *  optimistic bar until the viewer's next authoritative tick corrected it.
+ *
  *  `clientNonce` lets the sender match an optimistic update to its ack. */
 export interface OverlayResponseMsg {
   t: 'overlay.response';
@@ -106,7 +120,7 @@ export interface OverlayResultsMsg {
   roomName: string;
   overlayId: string;
   gen: number;
-  phase: OverlayPhase | 'draft' | 'revealed';
+  phase: OverlayPhase;
   tallies: Record<string, number>;
   total: number;
 }

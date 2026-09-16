@@ -35,3 +35,7 @@ export {
 } from './kinds/participation';
 export { svgModule } from './kinds/svg';
 export { giftModule, GIFT_WIRE_VERSION, GIFT_FEED_CAP } from './kinds/gift';
+
+// The shared poll VIEW model: the authoritative overlay wire ⇄ the flattened shape
+// a poll card renders. One mapping for web + mobile, so the two cannot drift.
+export * from './pollView';

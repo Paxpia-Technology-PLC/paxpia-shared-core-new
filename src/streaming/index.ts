@@ -32,6 +32,12 @@ export * from './docRender';
 // doc/image viewer uses so wheel/pinch zoom (centred on the cursor) + arrow/drag
 // pan are identical on web (DocOverlay) and mobile (DocPdfRenderer).
 export * from './docViewport';
+// The SINGLE-PAGE PDF FIT SCALE: the one fit-to-frame expression every renderer that
+// presents ONE page whole must use, so a page with an aspect ratio no frame implies
+// (an A0 poster, a stitched scan) cannot rasterize into a canvas past the platform's
+// allocation ceiling. Fit-WIDTH-only is what made that unbounded. Scroll-mode viewers
+// deliberately do NOT use it — see the header of docScale.ts.
+export * from './docScale';
 // The ONE shared doc RENDERER (HTML): a single self-contained pdf.js/epub.js document
 // hosted in an <iframe> (web) AND a react-native-webview (mobile) — same engine, same
 // version, same fit. Zoom/pan/page ride a postMessage transform/control protocol so

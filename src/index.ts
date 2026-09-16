@@ -238,6 +238,17 @@ export {
   zoomByFactor,
   DOC_ARROW_PAN_FRACTION,
 } from './streaming/docViewport';
+// THE SINGLE-PAGE PDF FIT SCALE — the one fit-to-frame expression every renderer that
+// presents ONE page whole shares, so a page with an aspect ratio no frame implies (an
+// A0 poster, a stitched scan) cannot rasterize into a canvas past the platform's
+// allocation ceiling. The `_JS` form is the same expression as injectable source, for
+// the WebView string builders. Scroll-mode viewers deliberately do NOT use it.
+export type { PdfPageSize } from './streaming/docScale';
+export {
+  fitScaleToFrame,
+  FIT_SCALE_TO_FRAME_JS,
+  FIT_SCALE_TO_FRAME_FN,
+} from './streaming/docScale';
 // THE ONE SHARED DOC RENDERER (HTML) — a single self-contained pdf.js/epub.js document
 // hosted identically in an <iframe> (web) and a react-native-webview (mobile), driven by
 // a transform/control postMessage protocol so the docViewport math syncs PDF/EPUB the
